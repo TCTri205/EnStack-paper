@@ -78,6 +78,48 @@ class EnStackTrainer:
         self.best_val_f1 = 0.0
         self.best_val_acc = 0.0
 
+    def load_checkpoint(self, checkpoint_path: str) -> int:
+        """
+        Loads the model and training state from a checkpoint.
+
+        Args:
+            checkpoint_path (str): Path to the checkpoint directory.
+
+        Returns:
+            int: The epoch number to resume from.
+        """
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+
+        # Load model weights
+        from transformers import RobertaForSequenceClassification
+
+        # We need to reload the inner model using HF's from_pretrained
+        # This ensures we get the weights correctly
+        self.model.model = RobertaForSequenceClassification.from_pretrained(
+            checkpoint_path, num_labels=self.model.num_labels
+        )
+        self.model.to(self.device)
+        logger.info(f"Loaded model weights from {checkpoint_path}")
+
+        # Load training state
+        state_path = checkpoint_path / "training_state.pth"
+        if state_path.exists():
+            state = torch.load(state_path, map_location=self.device)
+            self.optimizer.load_state_dict(state["optimizer_state_dict"])
+            self.best_val_f1 = state.get("best_val_f1", 0.0)
+            self.best_val_acc = state.get("best_val_acc", 0.0)
+
+            if self.scheduler is not None and "scheduler_state_dict" in state:
+                self.scheduler.load_state_dict(state["scheduler_state_dict"])
+
+            epoch = state.get("epoch", 0)
+            logger.info(f"Loaded training state (Epoch {epoch})")
+            return epoch
+
+        return 0
+
     def _get_linear_schedule_with_warmup(
         self, num_training_steps: int, num_warmup_steps: int = 0
     ) -> LambdaLR:
@@ -236,13 +278,16 @@ class EnStackTrainer:
 
         return metrics
 
-    def train(self, num_epochs: int, save_best: bool = True) -> Dict[str, List[float]]:
+    def train(
+        self, num_epochs: int, save_best: bool = True, resume_from: Optional[str] = None
+    ) -> Dict[str, List[float]]:
         """
         Trains the model for multiple epochs.
 
         Args:
             num_epochs (int): Number of epochs to train.
             save_best (bool): Whether to save the best model based on validation F1.
+            resume_from (Optional[str]): Path to checkpoint directory to resume from.
 
         Returns:
             Dict[str, List[float]]: Dictionary containing training history.
@@ -257,6 +302,25 @@ class EnStackTrainer:
             num_training_steps, num_warmup_steps
         )
 
+        start_epoch = 1
+
+        # Resume if requested
+        if resume_from:
+            logger.info(f"Resuming training from {resume_from}...")
+            loaded_epoch = self.load_checkpoint(resume_from)
+            if loaded_epoch > 0:
+                start_epoch = loaded_epoch + 1
+                logger.info(f"Resuming from epoch {start_epoch}")
+
+                # Adjust scheduler to skip steps
+                # Note: This is an approximation. Ideally we save scheduler state.
+                # We added scheduler loading in load_checkpoint, so if it exists, it's handled.
+                if self.scheduler and start_epoch > 1:
+                    # If we didn't load scheduler state (old checkpoint), step it forward
+                    steps_to_skip = (start_epoch - 1) * len(self.train_loader)
+                    for _ in range(steps_to_skip):
+                        self.scheduler.step()
+
         history: Dict[str, List[float]] = {
             "train_loss": [],
             "train_acc": [],
@@ -266,9 +330,9 @@ class EnStackTrainer:
             "val_f1": [],
         }
 
-        logger.info(f"Starting training for {num_epochs} epochs")
+        logger.info(f"Starting training for {num_epochs} epochs (from {start_epoch})")
 
-        for epoch in range(1, num_epochs + 1):
+        for epoch in range(start_epoch, num_epochs + 1):
             # Train
             train_metrics = self.train_epoch(epoch)
             history["train_loss"].append(train_metrics["loss"])
@@ -286,18 +350,24 @@ class EnStackTrainer:
                 if save_best and val_metrics["f1"] > self.best_val_f1:
                     self.best_val_f1 = val_metrics["f1"]
                     self.best_val_acc = val_metrics["accuracy"]
-                    self.save_checkpoint(f"best_model_epoch_{epoch}")
+                    self.save_checkpoint(f"best_model_epoch_{epoch}", epoch=epoch)
                     logger.info(f"New best model saved (F1: {self.best_val_f1:.4f})")
+
+            # ALWAYS save last checkpoint for resuming
+            self.save_checkpoint("last_checkpoint", epoch=epoch)
 
         logger.info("Training completed")
         return history
 
-    def save_checkpoint(self, checkpoint_name: str = "checkpoint") -> None:
+    def save_checkpoint(
+        self, checkpoint_name: str = "checkpoint", epoch: int = 0
+    ) -> None:
         """
         Saves the model checkpoint.
 
         Args:
             checkpoint_name (str): Name of the checkpoint.
+            epoch (int): Current epoch number.
         """
         save_path = self.output_dir / checkpoint_name
         save_path.mkdir(parents=True, exist_ok=True)
@@ -305,14 +375,17 @@ class EnStackTrainer:
         self.model.save_pretrained(str(save_path))
 
         # Save optimizer state
-        torch.save(
-            {
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "best_val_f1": self.best_val_f1,
-                "best_val_acc": self.best_val_acc,
-            },
-            save_path / "training_state.pth",
-        )
+        state_dict = {
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "best_val_f1": self.best_val_f1,
+            "best_val_acc": self.best_val_acc,
+            "epoch": epoch,
+        }
+
+        if self.scheduler is not None:
+            state_dict["scheduler_state_dict"] = self.scheduler.state_dict()
+
+        torch.save(state_dict, save_path / "training_state.pth")
 
         logger.info(f"Checkpoint saved to {save_path}")
 

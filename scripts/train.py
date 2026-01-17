@@ -92,6 +92,12 @@ def parse_args() -> argparse.Namespace:
         help="Path to log file",
     )
 
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume training from last checkpoint if available",
+    )
+
     return parser.parse_args()
 
 
@@ -126,7 +132,7 @@ def load_labels_from_file(data_path: str) -> np.ndarray:
 
 
 def train_base_models(
-    config: Dict, model_names: List[str], num_epochs: int, device
+    config: Dict, model_names: List[str], num_epochs: int, device, resume: bool = False
 ) -> Dict:
     """
     Trains all base models.
@@ -136,6 +142,7 @@ def train_base_models(
         model_names (List[str]): List of model names to train.
         num_epochs (int): Number of training epochs.
         device: Device to use for training.
+        resume (bool): Whether to resume from checkpoint.
 
     Returns:
         Dict: Dictionary of trained trainers.
@@ -148,14 +155,31 @@ def train_base_models(
         logger.info(f"Training {model_name.upper()}")
         logger.info("=" * 60)
 
+        output_dir = f"{config['training']['output_dir']}/{model_name}"
+
+        # Determine if we should resume
+        resume_path = None
+        if resume:
+            last_checkpoint = Path(output_dir) / "last_checkpoint"
+            if last_checkpoint.exists():
+                logger.info(f"Found checkpoint at {last_checkpoint}, will resume.")
+                resume_path = str(last_checkpoint)
+
+                # If loading from checkpoint, we don't need pretrained=True strictly,
+                # but we still need to initialize the architecture.
+                # However, create_model initializes the wrapper.
+                # trainer.train(resume_from=...) handles the actual weight loading.
+            else:
+                logger.info("No checkpoint found, starting fresh.")
+
         # Create model and tokenizer
+        # Note: If resuming, weights will be overwritten by trainer.load_checkpoint
         model, tokenizer = create_model(model_name, config, pretrained=True)
 
         # Create dataloaders
         train_loader, val_loader, test_loader = create_dataloaders(config, tokenizer)
 
         # Create trainer
-        output_dir = f"{config['training']['output_dir']}/{model_name}"
         trainer = EnStackTrainer(
             model=model,
             train_loader=train_loader,
@@ -167,7 +191,9 @@ def train_base_models(
         )
 
         # Train
-        history = trainer.train(num_epochs=num_epochs, save_best=True)
+        history = trainer.train(
+            num_epochs=num_epochs, save_best=True, resume_from=resume_path
+        )
 
         # Evaluate on test set
         if test_loader is not None:
@@ -267,7 +293,9 @@ def main():
 
     # Step 1: Train base models
     if not args.skip_training:
-        trainers = train_base_models(config, model_names, num_epochs, device)
+        trainers = train_base_models(
+            config, model_names, num_epochs, device, resume=args.resume
+        )
     else:
         logger.info("Skipping base model training (using existing checkpoints)")
         # Load existing models (implementation depends on your checkpoint structure)
