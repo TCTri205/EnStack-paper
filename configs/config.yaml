@@ -1,0 +1,26 @@
+data:
+  root_dir: "/content/drive/MyDrive/EnStack_Data"
+  train_file: "train_processed.pkl"
+  val_file: "val_processed.pkl"
+  test_file: "test_processed.pkl"
+
+model:
+  base_models: 
+    - "codebert"
+    - "graphcodebert"
+    - "unixcoder"
+  # Mapping names to HuggingFace models
+  model_map:
+    codebert: "microsoft/codebert-base"
+    graphcodebert: "microsoft/graphcodebert-base"
+    unixcoder: "microsoft/unixcoder-base"
+  meta_classifier: "svm" # Options: lr, svm, rf, xgboost
+  num_labels: 5
+
+training:
+  batch_size: 16
+  epochs: 10
+  learning_rate: 2.0e-5
+  max_length: 512
+  seed: 42
+  output_dir: "/content/drive/MyDrive/EnStack_Data/checkpoints"
