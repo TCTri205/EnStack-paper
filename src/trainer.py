@@ -156,7 +156,19 @@ class EnStackTrainer:
 
             epoch = state.get("epoch", 0)
             step = state.get("step", 0)
-            saved_total_batches = state.get("total_batches", 0)
+            # For old checkpoints without total_batches, use current loader length
+            saved_total_batches = state.get("total_batches", None)
+
+            # Handle legacy checkpoints
+            if saved_total_batches is None or saved_total_batches == 0:
+                current_batches = len(self.train_loader) if self.train_loader else 0
+                logger.warning(
+                    f"⚠️  Legacy checkpoint detected (missing total_batches field)"
+                )
+                logger.warning(
+                    f"   Using current dataset size: {current_batches} batches"
+                )
+                saved_total_batches = current_batches
 
             # Enhanced logging for debugging
             logger.info("=" * 60)
@@ -334,9 +346,13 @@ class EnStackTrainer:
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-            # Update progress bar
+            # Update progress bar with detailed info
+            current_lr = self.optimizer.param_groups[0]["lr"]
             progress_bar.set_postfix(
-                {"loss": loss.item() * self.gradient_accumulation_steps}
+                {
+                    "loss": f"{loss.item() * self.gradient_accumulation_steps:.4f}",
+                    "lr": f"{current_lr:.2e}",
+                }
             )
 
             # Log to TensorBoard
