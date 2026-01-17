@@ -43,7 +43,9 @@ def main():
 
     # Create model and tokenizer
     model, tokenizer = create_model(model_name, config, pretrained=True)
-    logger.info(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
+    logger.info(
+        f"Model created with {sum(p.numel() for p in model.parameters())} parameters"
+    )
 
     # Create data loaders
     # NOTE: Make sure your data files exist at the paths specified in config.yaml
