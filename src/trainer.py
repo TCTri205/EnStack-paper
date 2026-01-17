@@ -7,7 +7,7 @@ and feature extraction from transformer-based models.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, cast
+from typing import Dict, List, Optional, Tuple, cast
 
 import numpy as np
 import torch
@@ -78,7 +78,7 @@ class EnStackTrainer:
         self.best_val_f1 = 0.0
         self.best_val_acc = 0.0
 
-    def load_checkpoint(self, checkpoint_path: str) -> tuple[int, int]:
+    def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, int]:
         """
         Loads the model and training state from a checkpoint.
 
@@ -86,7 +86,7 @@ class EnStackTrainer:
             checkpoint_path (str): Path to the checkpoint directory.
 
         Returns:
-            tuple[int, int]: A tuple containing (epoch, step).
+            Tuple[int, int]: A tuple containing (epoch, step).
                              - epoch: The epoch to resume from (or the last completed one).
                              - step: The step within that epoch to resume from.
         """
