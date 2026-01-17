@@ -1,0 +1,81 @@
+TIMING ANALYSIS - CRITICAL FINDING
+===================================
+
+DATA FROM LOG:
+--------------
+Progress: 1047/1270
+Time: 03:50 = 230 seconds
+Speed: 4.69s/it
+Resume from: step 1000
+
+CALCULATION:
+------------
+1047 iterations done in 230 seconds
+230s / 1047 = 0.22s per iteration??? WAIT!
+
+NO! TQDM is WRONG!
+
+With CODE OLD (enumerate + initial=resume_step):
+  - enumerate(dataloader) counts from 0
+  - TQDM initial=1000 means counter STARTS at 1000
+  - When at iteration 47, TQDM shows: 1000+47 = 1047
+
+ACTUAL PROCESSING:
+------------------
+Iterations processed: 1047 (real enumerate step)
+Batches skipped: 1000 (with continue statement)  
+Batches trained: 47 (actual training)
+
+TIME BREAKDOWN:
+---------------
+Total time: 230 seconds (3:50)
+Time per iteration: 230 / 1047 = 0.22s/it
+
+BUT THIS IS IMPOSSIBLE! 
+If training is 0.47s/batch, how can skip be 0.22s/batch?
+
+ANSWER: We're STILL SKIPPING!
+  - 1047 batches loaded and skipped
+  - 0 batches trained yet
+  - Each load+skip takes: 230/1047 = 0.22s
+
+WAIT - That's FASTER than training???
+
+Let me recalculate with CORRECT understanding:
+
+TQDM initial=1000 means:
+  - Progress bar STARTS counting from 1000
+  - When enumerate returns step=47, TQDM displays 1000+47=1047
+  - So we've only processed 47 iterations!
+  - All 47 were SKIPPED (step < 1000 check)
+
+Time: 230s for 47 iterations = 4.9s/it
+→ Matches the 4.69s/it from log!
+
+CONCLUSION:
+-----------
+✅ We are STILL SKIPPING batches (loading them first)
+✅ Each skip takes ~4.9s (load from Drive + tokenize + skip)
+✅ Haven't started actual training yet
+✅ Will need another 953 iterations × 4.9s = 78 minutes to skip remaining
+
+THE REAL ISSUE:
+---------------
+Code is using:
+  initial=resume_step in TQDM
+
+This makes the COUNTER start at 1000, but enumerate STILL starts at 0!
+
+So when log shows "1047/1270":
+  - It's iteration #47 from enumerate (0-indexed)
+  - TQDM counter = 1000 + 47 = 1047
+  - We've only done 47 iterations
+  - All were skipped (step < 1000)
+  - Haven't trained anything yet!
+
+FIX VERIFICATION:
+-----------------
+After applying itertools.islice fix:
+  - Should show: X/270 (not X/1270)  
+  - Should skip instantly
+  - Should train at 0.47s/batch
