@@ -231,10 +231,22 @@ def train_base_models(
         # Determine if we should resume
         resume_path = None
         if resume:
+            # Priority 1: last_checkpoint (end-of-epoch, preferred)
             last_checkpoint = Path(output_dir) / "last_checkpoint"
+            # Priority 2: recovery_checkpoint (mid-epoch, fallback)
+            recovery_checkpoint = Path(output_dir) / "recovery_checkpoint"
+
             if last_checkpoint.exists():
-                logger.info(f"Found checkpoint at {last_checkpoint}, will resume.")
+                logger.info(f"✅ Found end-of-epoch checkpoint: {last_checkpoint}")
                 resume_path = str(last_checkpoint)
+            elif recovery_checkpoint.exists():
+                logger.warning(
+                    f"⚠️  Only found mid-epoch recovery checkpoint: {recovery_checkpoint}"
+                )
+                logger.warning(
+                    f"   This means the last epoch did not complete successfully."
+                )
+                resume_path = str(recovery_checkpoint)
             else:
                 logger.info("No checkpoint found, starting fresh.")
 

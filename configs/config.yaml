@@ -51,6 +51,11 @@ training:
   early_stopping_patience: 3
   early_stopping_metric: "f1"
   
+  # Checkpoint Options
+  save_steps: 500            # Save mid-epoch checkpoint every N steps (0 = disable)
+  # save_steps: 0 means ONLY save at end of epoch (faster, but risky if crash mid-epoch)
+  # save_steps: 500 means save every 500 steps (safer, but slower and uses more disk)
+  
   # Data Pipeline Options
   use_dynamic_padding: True
   lazy_loading: False

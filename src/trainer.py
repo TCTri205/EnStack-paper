@@ -156,7 +156,34 @@ class EnStackTrainer:
 
             epoch = state.get("epoch", 0)
             step = state.get("step", 0)
-            logger.info(f"Loaded training state (Epoch {epoch}, Step {step})")
+            saved_total_batches = state.get("total_batches", 0)
+
+            # Enhanced logging for debugging
+            logger.info("=" * 60)
+            logger.info("LOADED CHECKPOINT STATE:")
+            logger.info(f"  Epoch: {epoch}")
+            logger.info(f"  Step: {step}")
+            logger.info(f"  Total Batches (saved): {saved_total_batches}")
+            logger.info(f"  Best Val F1: {self.best_val_f1:.4f}")
+            logger.info(f"  Best Val Acc: {self.best_val_acc:.4f}")
+
+            # Determine completion status
+            if step == 0:
+                logger.info(f"  Status: ✅ Epoch {epoch} COMPLETED")
+            elif saved_total_batches > 0 and step >= saved_total_batches:
+                logger.info(
+                    f"  Status: ✅ Epoch {epoch} COMPLETED (step >= total_batches)"
+                )
+            else:
+                if saved_total_batches > 0:
+                    progress = (step / saved_total_batches) * 100
+                    logger.info(
+                        f"  Status: ⏸️  Epoch {epoch} INCOMPLETE ({progress:.1f}% done)"
+                    )
+                else:
+                    logger.info(f"  Status: ⏸️  Epoch {epoch} INCOMPLETE (step={step})")
+            logger.info("=" * 60)
+
             return epoch, step
 
         return 0, 0
@@ -211,18 +238,30 @@ class EnStackTrainer:
         # Adjust total batches for progress bar if resuming
         total_batches = len(self.train_loader)
 
+        # Create progress bar that shows actual remaining work
+        if resume_step > 0:
+            remaining_batches = total_batches - resume_step
+            logger.info(
+                f"⏭️  Resuming: will skip {resume_step} batches, "
+                f"train {remaining_batches} batches"
+            )
+
         progress_bar = tqdm(
             enumerate(self.train_loader),
             total=total_batches,
             desc=f"Epoch {epoch} [Train]",
             leave=False,
-            initial=resume_step,
+            initial=resume_step,  # Start counter at resume_step
         )
 
+        trained_count = 0  # Track actual batches trained (excluding skipped)
+
         for step, batch in progress_bar:
-            # Skip steps if resuming
+            # Skip steps if resuming (fast - just continue)
             if step < resume_step:
                 continue
+
+            trained_count += 1
 
             # Move batch to device
             input_ids = batch["input_ids"].to(self.device)
@@ -312,9 +351,22 @@ class EnStackTrainer:
                     "Train/LR", self.optimizer.param_groups[0]["lr"], global_step
                 )
 
-            # Step-based Checkpointing
-            if (step + 1) % save_steps == 0:
-                self.save_checkpoint("last_checkpoint", epoch=epoch, step=(step + 1))
+            # Step-based Checkpointing (save to separate file to avoid overwriting end-of-epoch)
+            # Only save if save_steps > 0 (can be disabled for faster training)
+            if save_steps > 0 and (step + 1) % save_steps == 0:
+                logger.info(
+                    f"💾 Saving mid-epoch checkpoint (Epoch {epoch}, Step {step + 1})"
+                )
+                # Use different checkpoint name to avoid overwriting
+                self.save_checkpoint(
+                    f"checkpoint_epoch{epoch}_step{step + 1}",
+                    epoch=epoch,
+                    step=(step + 1),
+                )
+                # Also update a "recovery" checkpoint that can be cleaned up later
+                self.save_checkpoint(
+                    "recovery_checkpoint", epoch=epoch, step=(step + 1)
+                )
 
                 # Clear VRAM cache after checkpoint to prevent OOM
                 if torch.cuda.is_available():
@@ -324,8 +376,8 @@ class EnStackTrainer:
         if len(all_labels) == 0:
             return {"loss": 0.0, "accuracy": 0.0, "f1": 0.0}
 
-        steps_trained = total_batches - resume_step
-        avg_loss = total_loss / steps_trained if steps_trained > 0 else 0.0
+        # Use actual trained count for average loss
+        avg_loss = total_loss / trained_count if trained_count > 0 else 0.0
 
         accuracy = accuracy_score(all_labels, all_preds)
         f1 = f1_score(all_labels, all_preds, average="weighted", zero_division=0)
@@ -337,8 +389,9 @@ class EnStackTrainer:
         }
 
         logger.info(
-            f"Epoch {epoch} [Train] - Loss: {avg_loss:.4f}, "
-            f"Acc: {accuracy:.4f}, F1: {f1:.4f}"
+            f"Epoch {epoch} [Train] - "
+            f"Trained {trained_count}/{total_batches} batches, "
+            f"Loss: {avg_loss:.4f}, Acc: {accuracy:.4f}, F1: {f1:.4f}"
         )
 
         return metrics
@@ -503,21 +556,54 @@ class EnStackTrainer:
 
         # Resume if requested
         if resume_from:
-            logger.info(f"Resuming training from {resume_from}...")
+            logger.info("=" * 60)
+            logger.info("RESUMING TRAINING FROM CHECKPOINT")
+            logger.info(f"Checkpoint path: {resume_from}")
+            logger.info("=" * 60)
+
             loaded_epoch, loaded_step = self.load_checkpoint(resume_from)
 
             # Determine where to start
+            steps_per_epoch = len(self.train_loader)
+            logger.info(f"\nCurrent dataset: {steps_per_epoch} batches/epoch")
+
+            # Check if the checkpoint was saved at the end of an epoch
+            # Step=0 typically means end of epoch (when we explicitly save with step=0)
+            # OR step >= total batches means we completed the epoch
             if loaded_step == 0:
-                # Previous checkpoint was at end of epoch (old format or finished epoch)
+                # Checkpoint saved at end of epoch, start next epoch
                 if loaded_epoch > 0:
                     start_epoch = loaded_epoch + 1
                     start_step = 0
-                    logger.info(f"Resuming from start of epoch {start_epoch}")
+                    logger.info(
+                        f"\n✅ Epoch {loaded_epoch} was COMPLETED\n"
+                        f"➡️  Will resume from START of epoch {start_epoch}"
+                    )
             else:
-                # Previous checkpoint was mid-epoch
-                start_epoch = loaded_epoch
-                start_step = loaded_step
-                logger.info(f"Resuming from epoch {start_epoch}, step {start_step}")
+                # Checkpoint saved mid-epoch
+                # Check if we actually completed the epoch by comparing with current dataset size
+                if loaded_step >= steps_per_epoch:
+                    # The checkpoint step is >= current dataset batches
+                    # This means the epoch was likely completed with a different/larger dataset
+                    start_epoch = loaded_epoch + 1
+                    start_step = 0
+                    logger.info(
+                        f"\n✅ Checkpoint step ({loaded_step}) >= current batches ({steps_per_epoch})\n"
+                        f"   Treating epoch {loaded_epoch} as COMPLETED\n"
+                        f"➡️  Will resume from START of epoch {start_epoch}"
+                    )
+                else:
+                    # Mid-epoch, continue from where we left off
+                    start_epoch = loaded_epoch
+                    start_step = loaded_step
+                    remaining = steps_per_epoch - loaded_step
+                    progress = (loaded_step / steps_per_epoch) * 100
+                    logger.info(
+                        f"\n⏸️  Epoch {loaded_epoch} is INCOMPLETE\n"
+                        f"   Progress: {loaded_step}/{steps_per_epoch} batches ({progress:.1f}%)\n"
+                        f"   Remaining: {remaining} batches\n"
+                        f"➡️  Will resume WITHIN epoch {start_epoch} from step {start_step}"
+                    )
 
             # Adjust scheduler to skip steps
             if self.scheduler:
@@ -540,11 +626,21 @@ class EnStackTrainer:
             "val_f1": [],
         }
 
-        logger.info(f"Starting training for {num_epochs} epochs (from {start_epoch})")
+        logger.info("=" * 60)
+        logger.info(
+            f"STARTING TRAINING: {num_epochs} epochs (from epoch {start_epoch})"
+        )
+        logger.info("=" * 60)
 
         for epoch in range(start_epoch, num_epochs + 1):
             # If this is the first epoch of the loop, use start_step. Otherwise 0.
             current_resume_step = start_step if epoch == start_epoch else 0
+
+            logger.info("\n" + "=" * 60)
+            logger.info(f"EPOCH {epoch}/{num_epochs}")
+            if current_resume_step > 0:
+                logger.info(f"  Resuming from step {current_resume_step}")
+            logger.info("=" * 60)
 
             # Train
             train_metrics = self.train_epoch(
@@ -618,7 +714,21 @@ class EnStackTrainer:
                         should_stop = True
 
             # ALWAYS save last checkpoint for resuming (reset step to 0 as epoch finished)
+            logger.info(f"📥 Saving end-of-epoch checkpoint (Epoch {epoch} completed)")
             self.save_checkpoint("last_checkpoint", epoch=epoch, step=0)
+
+            # Clean up mid-epoch recovery checkpoint as epoch completed successfully
+            recovery_path = self.output_dir / "recovery_checkpoint"
+            if recovery_path.exists():
+                import shutil
+
+                try:
+                    shutil.rmtree(recovery_path)
+                    logger.debug(
+                        f"Cleaned up recovery checkpoint (epoch {epoch} completed)"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to clean up recovery checkpoint: {e}")
 
             # Reset start_step for next epochs
             start_step = 0
@@ -647,33 +757,82 @@ class EnStackTrainer:
         self, checkpoint_name: str = "checkpoint", epoch: int = 0, step: int = 0
     ) -> None:
         """
-        Saves the model checkpoint.
+        Saves the model checkpoint with atomic write to prevent corruption.
 
         Args:
             checkpoint_name (str): Name of the checkpoint.
             epoch (int): Current epoch number.
             step (int): Current step within the epoch.
         """
+        import tempfile
+        import shutil
+
         save_path = self.output_dir / checkpoint_name
         save_path.mkdir(parents=True, exist_ok=True)
 
-        self.model.save_pretrained(str(save_path))
+        # Use temporary directory for atomic save
+        temp_dir = None
+        try:
+            # Create temp directory in same parent to ensure same filesystem
+            temp_dir = Path(
+                tempfile.mkdtemp(dir=self.output_dir, prefix=f".tmp_{checkpoint_name}_")
+            )
 
-        # Save optimizer state
-        state_dict = {
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "best_val_f1": self.best_val_f1,
-            "best_val_acc": self.best_val_acc,
-            "epoch": epoch,
-            "step": step,
-        }
+            # Save model to temp directory first
+            logger.debug(f"Saving model to temporary location: {temp_dir}")
+            self.model.save_pretrained(str(temp_dir))
 
-        if self.scheduler is not None:
-            state_dict["scheduler_state_dict"] = self.scheduler.state_dict()
+            # Save optimizer and training state
+            state_dict = {
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "best_val_f1": self.best_val_f1,
+                "best_val_acc": self.best_val_acc,
+                "epoch": epoch,
+                "step": step,
+                "total_batches": len(self.train_loader) if self.train_loader else 0,
+            }
 
-        torch.save(state_dict, save_path / "training_state.pth")
+            if self.scheduler is not None:
+                state_dict["scheduler_state_dict"] = self.scheduler.state_dict()
 
-        logger.info(f"Checkpoint saved to {save_path}")
+            torch.save(state_dict, temp_dir / "training_state.pth")
+
+            # Atomic move: only if everything succeeded
+            # First, backup existing checkpoint if it exists
+            backup_path = None
+            if save_path.exists():
+                backup_path = self.output_dir / f".backup_{checkpoint_name}"
+                if backup_path.exists():
+                    shutil.rmtree(backup_path)
+                logger.debug(f"Creating backup: {backup_path}")
+                shutil.move(str(save_path), str(backup_path))
+
+            # Move temp to final location
+            logger.debug(f"Moving checkpoint to final location: {save_path}")
+            shutil.move(str(temp_dir), str(save_path))
+            temp_dir = None  # Successfully moved, don't clean up
+
+            # Remove backup on success
+            if backup_path and backup_path.exists():
+                shutil.rmtree(backup_path)
+
+            logger.info(
+                f"✅ Checkpoint saved: {checkpoint_name} (epoch={epoch}, step={step})"
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Failed to save checkpoint {checkpoint_name}: {e}")
+            logger.error(f"   Epoch: {epoch}, Step: {step}")
+            # Don't raise - allow training to continue even if checkpoint save fails
+            # But log prominently so user knows
+            logger.warning("⚠️  Training will continue but checkpoint may be lost!")
+        finally:
+            # Clean up temp directory if it still exists (save failed)
+            if temp_dir and temp_dir.exists():
+                try:
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
 
     def extract_features(
         self,
@@ -738,7 +897,7 @@ class EnStackTrainer:
 
         features = np.concatenate(all_features, axis=0)
         logger.info(
-            f"Extracted {mode} (pooling={pooling if mode=='embedding' else 'N/A'}) "
+            f"Extracted {mode} (pooling={pooling if mode == 'embedding' else 'N/A'}) "
             f"with shape: {features.shape}"
         )
 
