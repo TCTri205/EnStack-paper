@@ -64,8 +64,9 @@ def test_vulnerability_dataset_getitem(sample_data_file, tokenizer):
     assert "labels" in item
 
     # Check shapes
-    assert item["input_ids"].shape == (128,)
-    assert item["attention_mask"].shape == (128,)
+    # No padding in __getitem__, so length should be <= max_length
+    assert item["input_ids"].shape[0] <= 128
+    assert item["attention_mask"].shape[0] <= 128
     assert item["labels"].shape == ()
 
     # Check types
@@ -124,7 +125,8 @@ def test_create_dataloaders(sample_data_file, tokenizer):
     # Check batch
     batch = next(iter(train_loader))
     assert batch["input_ids"].shape[0] <= 2  # batch_size
-    assert batch["input_ids"].shape[1] == 128  # max_length
+    # Dynamic padding: length will be max length in batch, which is likely < 128 for short samples
+    assert batch["input_ids"].shape[1] <= 128
 
 
 def test_dataset_labels(sample_data_file, tokenizer):

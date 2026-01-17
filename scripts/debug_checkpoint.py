@@ -4,8 +4,9 @@ Usage: python scripts/debug_checkpoint.py --checkpoint_path <path>
 """
 
 import argparse
-import torch
 from pathlib import Path
+
+import torch
 
 
 def analyze_checkpoint(checkpoint_path: str):
@@ -21,7 +22,7 @@ def analyze_checkpoint(checkpoint_path: str):
 
     if not state_file.exists():
         print(f"❌ Training state file NOT found: {state_file}")
-        print(f"\nChecking directory contents:")
+        print("\nChecking directory contents:")
         if checkpoint_dir.exists():
             for f in checkpoint_dir.iterdir():
                 print(f"  - {f.name}")
@@ -33,7 +34,7 @@ def analyze_checkpoint(checkpoint_path: str):
     print(f"\n📂 Loading checkpoint from: {state_file}")
     state = torch.load(state_file, map_location="cpu")
 
-    print(f"\n📊 CHECKPOINT STATE:")
+    print("\n📊 CHECKPOINT STATE:")
     print(f"  {'Key':<25} {'Value':<20} {'Type':<15}")
     print("  " + "-" * 60)
 
@@ -48,19 +49,19 @@ def analyze_checkpoint(checkpoint_path: str):
     total_batches = state.get("total_batches", "N/A")
     best_f1 = state.get("best_val_f1", "N/A")
 
-    print(f"\n🔍 INTERPRETATION:")
+    print("\n🔍 INTERPRETATION:")
     print(f"  Current Epoch: {epoch}")
     print(f"  Current Step: {step}")
     print(f"  Total Batches per Epoch: {total_batches}")
     print(f"  Best Validation F1: {best_f1}")
 
     # Analyze completion status
-    print(f"\n✅ COMPLETION STATUS:")
+    print("\n✅ COMPLETION STATUS:")
 
     if epoch == "N/A":
-        print(f"  ⚠️  No epoch information (old checkpoint format)")
+        print("  ⚠️  No epoch information (old checkpoint format)")
     elif step == "N/A":
-        print(f"  ⚠️  No step information (old checkpoint format)")
+        print("  ⚠️  No step information (old checkpoint format)")
     elif step == 0:
         print(f"  ✅ Epoch {epoch} is COMPLETED")
         print(f"  ➡️  Resume will start from epoch {epoch + 1}")
@@ -77,26 +78,26 @@ def analyze_checkpoint(checkpoint_path: str):
             print(f"  ➡️  Resume will continue epoch {epoch} from step {step}")
         else:
             print(f"  ⏸️  Epoch {epoch} appears INCOMPLETE (step={step})")
-            print(f"     Cannot determine exact progress (no total_batches info)")
+            print("     Cannot determine exact progress (no total_batches info)")
             print(f"  ➡️  Resume will continue epoch {epoch} from step {step}")
 
     # Check for optimizer state
-    print(f"\n📦 OPTIMIZER STATE:")
+    print("\n📦 OPTIMIZER STATE:")
     if "optimizer_state_dict" in state:
         opt_state = state["optimizer_state_dict"]
         if "state" in opt_state:
             num_params = len(opt_state["state"])
             print(f"  ✅ Optimizer state exists ({num_params} parameter groups)")
         else:
-            print(f"  ⚠️  Optimizer state exists but appears empty")
+            print("  ⚠️  Optimizer state exists but appears empty")
     else:
-        print(f"  ❌ No optimizer state found")
+        print("  ❌ No optimizer state found")
 
     # Check for scheduler state
     if "scheduler_state_dict" in state:
-        print(f"  ✅ Scheduler state exists")
+        print("  ✅ Scheduler state exists")
     else:
-        print(f"  ⚠️  No scheduler state found")
+        print("  ⚠️  No scheduler state found")
 
     print("\n" + "=" * 70)
 
@@ -106,19 +107,19 @@ def analyze_checkpoint(checkpoint_path: str):
         print(f"  • This checkpoint marks the END of epoch {epoch}")
         print(f"  • Resuming will correctly start from epoch {epoch + 1}")
     elif step != "N/A" and step != 0:
-        print(f"  • This checkpoint was saved MID-EPOCH")
-        print(f"  • If you believe the epoch completed, the checkpoint may be outdated")
-        print(f"  • Possible causes:")
-        print(f"    1. Training crashed/stopped during epoch")
-        print(f"    2. Checkpoint at end of epoch failed to save")
+        print("  • This checkpoint was saved MID-EPOCH")
+        print("  • If you believe the epoch completed, the checkpoint may be outdated")
+        print("  • Possible causes:")
+        print("    1. Training crashed/stopped during epoch")
+        print("    2. Checkpoint at end of epoch failed to save")
         print(
-            f"    3. End-of-epoch checkpoint was overwritten by a later mid-epoch save"
+            "    3. End-of-epoch checkpoint was overwritten by a later mid-epoch save"
         )
-        print(f"  • Solutions:")
+        print("  • Solutions:")
         print(
-            f"    - Use scripts/fix_checkpoint_epoch.py to manually mark epoch as complete"
+            "    - Use scripts/fix_checkpoint_epoch.py to manually mark epoch as complete"
         )
-        print(f"    - OR delete checkpoint and restart training")
+        print("    - OR delete checkpoint and restart training")
 
     print("\n" + "=" * 70)
 

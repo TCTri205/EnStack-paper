@@ -23,6 +23,7 @@ pip install -q pandas>=1.3
 pip install -q tree-sitter>=0.20
 pip install -q tqdm pyyaml
 pip install -q pytest black ruff mypy
+pip install -q matplotlib seaborn tensorboard xgboost psutil
 
 echo "✓ Dependencies installed"
 

@@ -47,7 +47,7 @@ def demo_crash_and_resume():
     crash_at_step = 899
     total_batches = 1270
 
-    print(f"Parameters:")
+    print("Parameters:")
     print(f"  - save_steps = {save_steps}")
     print(f"  - crash_at_step = {crash_at_step}")
     print(f"  - total_batches = {total_batches}")
@@ -84,7 +84,7 @@ def demo_crash_and_resume():
     print("💥 CRASH!")
     print()
 
-    print(f"Final state before crash:")
+    print("Final state before crash:")
     print(
         f"  - Model in memory: {len(model.batches_trained)} batches (0-{len(model.batches_trained) - 1})"
     )
@@ -107,14 +107,14 @@ def demo_crash_and_resume():
     model_resumed.load(checkpoint_disk)
     resume_step = checkpoint_disk["num_batches"]
 
-    print(f"Load checkpoint:")
+    print("Load checkpoint:")
     print(f"  - step = {resume_step}")
     print(
         f"  - Model has: {len(model_resumed.batches_trained)} batches (0-{len(model_resumed.batches_trained) - 1})"
     )
     print()
 
-    print(f"Resume training:")
+    print("Resume training:")
     print(f"  - Skip batches: 0 to {resume_step - 1}")
     print(f"  - Train batches: {resume_step} to {total_batches - 1}")
     print()
@@ -136,10 +136,10 @@ def demo_crash_and_resume():
 
     # Fast forward to show the pattern
     if total_batches > resume_step + 5:
-        print(f"  ...")
+        print("  ...")
         print(f"  Step {crash_at_step}: Train batch {crash_at_step} ⚠️ RE-TRAIN")
         print(f"  Step {crash_at_step + 1}: Train batch {crash_at_step + 1} ✅ NEW")
-        print(f"  ...")
+        print("  ...")
 
         # Simulate training the rest
         for step in range(resume_step + 5, total_batches):
@@ -155,13 +155,13 @@ def demo_crash_and_resume():
     print("=" * 70)
     print()
 
-    print(f"Batches re-trained:")
+    print("Batches re-trained:")
     print(f"  - Count: {len(batches_retrained)}")
     print(f"  - Range: {min(batches_retrained)} to {max(batches_retrained)}")
-    print(f"  - These batches were trained TWICE (Session 1 + Session 2)")
+    print("  - These batches were trained TWICE (Session 1 + Session 2)")
     print()
 
-    print(f"Time wasted (estimate):")
+    print("Time wasted (estimate):")
     time_per_batch_sec = 3.22
     wasted_time_min = len(batches_retrained) * time_per_batch_sec / 60
     print(
@@ -169,7 +169,7 @@ def demo_crash_and_resume():
     )
     print()
 
-    print(f"Final model state:")
+    print("Final model state:")
     print(f"  - Total batches in final model: {len(model_resumed.batches_trained)}")
     print(f"  - Expected: {total_batches}")
     print(
@@ -180,10 +180,10 @@ def demo_crash_and_resume():
     # Check for duplicates in final model
     unique_batches = set(model_resumed.batches_trained)
     if len(unique_batches) == len(model_resumed.batches_trained):
-        print(f"  ✅ No duplicate batches in final model")
-        print(f"     (Re-training overwrote the old weights)")
+        print("  ✅ No duplicate batches in final model")
+        print("     (Re-training overwrote the old weights)")
     else:
-        print(f"  ❌ ERROR: Duplicate batches detected!")
+        print("  ❌ ERROR: Duplicate batches detected!")
 
     print()
     print("=" * 70)
@@ -201,9 +201,9 @@ def demo_crash_and_resume():
     print("   - This is EXPECTED with checkpoint-based recovery")
     print()
     print("💡 To minimize wasted work:")
-    print(f"   - Increase checkpoint frequency (e.g., save_steps=200)")
+    print("   - Increase checkpoint frequency (e.g., save_steps=200)")
     print(f"   - Current: max {save_steps} batches wasted")
-    print(f"   - With save_steps=200: max 200 batches wasted")
+    print("   - With save_steps=200: max 200 batches wasted")
     print()
 
 

@@ -163,7 +163,7 @@ class EnStackTrainer:
             if saved_total_batches is None or saved_total_batches == 0:
                 current_batches = len(self.train_loader) if self.train_loader else 0
                 logger.warning(
-                    f"⚠️  Legacy checkpoint detected (missing total_batches field)"
+                    "⚠️  Legacy checkpoint detected (missing total_batches field)"
                 )
                 logger.warning(
                     f"   Using current dataset size: {current_batches} batches"
@@ -577,7 +577,7 @@ class EnStackTrainer:
         swa_model = None
         swa_scheduler = None
         if use_swa:
-            from torch.optim.swa_utils import AveragedModel, SWALR
+            from torch.optim.swa_utils import SWALR, AveragedModel
 
             swa_model = AveragedModel(self.model)
             swa_scheduler = SWALR(self.optimizer, swa_lr=self.learning_rate)
@@ -796,8 +796,8 @@ class EnStackTrainer:
             epoch (int): Current epoch number.
             step (int): Current step within the epoch.
         """
-        import tempfile
         import shutil
+        import tempfile
 
         save_path = self.output_dir / checkpoint_name
         save_path.mkdir(parents=True, exist_ok=True)
@@ -863,7 +863,7 @@ class EnStackTrainer:
             if temp_dir and temp_dir.exists():
                 try:
                     shutil.rmtree(temp_dir)
-                except:
+                except Exception:
                     pass
 
     def extract_features(

@@ -364,7 +364,7 @@ class VulnerabilityDataset(Dataset):
         if self.cache_tokenization:
             try:
                 torch.save(sample, self.cache_dir / f"sample_{idx}.pt")
-            except Exception as e:
+            except Exception:
                 # Don't fail if cache save fails
                 pass
 
@@ -414,8 +414,8 @@ def create_dataloaders(
     collate_fn = DataCollatorWithPadding(tokenizer) if use_dynamic_padding else None
 
     # Optimize DataLoader for GPU training
-    import platform
     import os
+    import platform
 
     is_windows = platform.system() == "Windows"
     pin_memory = torch.cuda.is_available()

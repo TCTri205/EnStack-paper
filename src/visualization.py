@@ -7,13 +7,13 @@ and model performance visualizations.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
+from sklearn.metrics import confusion_matrix, roc_curve
 
 logger = logging.getLogger("EnStack")
 
@@ -161,7 +161,7 @@ def plot_roc_curve(
 
 
 def plot_meta_feature_importance(
-    classifier: any,
+    classifier,
     feature_names: List[str],
     top_n: int = 20,
     save_path: Optional[str] = None,

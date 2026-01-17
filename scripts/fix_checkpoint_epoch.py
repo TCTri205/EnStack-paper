@@ -4,8 +4,9 @@ Usage: python scripts/fix_checkpoint_epoch.py --checkpoint_path <path> --epoch <
 """
 
 import argparse
-import torch
 from pathlib import Path
+
+import torch
 
 
 def fix_checkpoint_epoch(checkpoint_path: str, target_epoch: int):
@@ -28,7 +29,7 @@ def fix_checkpoint_epoch(checkpoint_path: str, target_epoch: int):
     state = torch.load(state_file, map_location="cpu")
 
     # Display current state
-    print(f"\nCurrent checkpoint state:")
+    print("\nCurrent checkpoint state:")
     print(f"  Epoch: {state.get('epoch', 'N/A')}")
     print(f"  Step: {state.get('step', 'N/A')}")
     print(f"  Total Batches: {state.get('total_batches', 'N/A')}")
@@ -44,15 +45,15 @@ def fix_checkpoint_epoch(checkpoint_path: str, target_epoch: int):
     torch.save(torch.load(state_file, map_location="cpu"), backup_file)
 
     # Save updated state
-    print(f"Saving updated state...")
+    print("Saving updated state...")
     torch.save(state, state_file)
 
     # Verify
     updated_state = torch.load(state_file, map_location="cpu")
-    print(f"\nUpdated checkpoint state:")
+    print("\nUpdated checkpoint state:")
     print(f"  Epoch: {updated_state.get('epoch')}")
     print(f"  Step: {updated_state.get('step')}")
-    print(f"\n✅ Checkpoint updated successfully!")
+    print("\n✅ Checkpoint updated successfully!")
     print(f"   When resuming, training will start from epoch {target_epoch + 1}")
 
 

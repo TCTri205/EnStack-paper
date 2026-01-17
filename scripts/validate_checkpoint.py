@@ -6,8 +6,9 @@ Usage: python scripts/validate_checkpoint.py --checkpoint_path <path>
 """
 
 import argparse
-import torch
 from pathlib import Path
+
+import torch
 
 
 def validate_checkpoint_consistency(checkpoint_path: str):
@@ -32,18 +33,18 @@ def validate_checkpoint_consistency(checkpoint_path: str):
     step = state.get("step", "N/A")
     total_batches = state.get("total_batches", "N/A")
 
-    print(f"\n📊 CHECKPOINT METADATA:")
+    print("\n📊 CHECKPOINT METADATA:")
     print(f"  Epoch: {epoch}")
     print(f"  Step: {step}")
     print(f"  Total Batches: {total_batches}")
 
     # Interpret what this means
-    print(f"\n🔍 INTERPRETATION:")
+    print("\n🔍 INTERPRETATION:")
 
     if step == 0:
-        print(f"  ✅ This is an END-OF-EPOCH checkpoint")
+        print("  ✅ This is an END-OF-EPOCH checkpoint")
         print(f"  📝 Meaning: Epoch {epoch} is COMPLETED")
-        print(f"  📦 Model has trained on:")
+        print("  📦 Model has trained on:")
         print(
             f"     - ALL batches of epoch {epoch} (batches 0 to {total_batches - 1 if total_batches != 'N/A' else '?'})"
         )
@@ -56,13 +57,13 @@ def validate_checkpoint_consistency(checkpoint_path: str):
         batches_remaining = total_batches - step
         progress = (step / total_batches) * 100 if total_batches > 0 else 0
 
-        print(f"  ⏸️  This is a MID-EPOCH checkpoint")
+        print("  ⏸️  This is a MID-EPOCH checkpoint")
         print(f"  📝 Meaning: Epoch {epoch} is INCOMPLETE")
-        print(f"  📦 Model has trained on:")
+        print("  📦 Model has trained on:")
         print(
             f"     - Batches 0 to {step - 1} of epoch {epoch} ({batches_trained} batches)"
         )
-        print(f"  ⏭️  NOT YET trained:")
+        print("  ⏭️  NOT YET trained:")
         print(
             f"     - Batches {step} to {total_batches - 1} ({batches_remaining} batches)"
         )
@@ -75,14 +76,14 @@ def validate_checkpoint_consistency(checkpoint_path: str):
         if batches_remaining > 100:
             print(f"\n  ⚠️  WARNING: {batches_remaining} batches remaining!")
             print(
-                f"     If training was interrupted, you may have already trained some of"
+                "     If training was interrupted, you may have already trained some of"
             )
             print(f"     batches {step}-{total_batches - 1} before the crash.")
-            print(f"     Those batches will be RE-TRAINED when resuming.")
-            print(f"     This is EXPECTED behavior with mid-epoch checkpoints.")
+            print("     Those batches will be RE-TRAINED when resuming.")
+            print("     This is EXPECTED behavior with mid-epoch checkpoints.")
 
     # Check optimizer state
-    print(f"\n🔧 OPTIMIZER STATE:")
+    print("\n🔧 OPTIMIZER STATE:")
     if "optimizer_state_dict" in state:
         opt_state = state["optimizer_state_dict"]
         if "state" in opt_state and len(opt_state["state"]) > 0:
@@ -105,14 +106,14 @@ def validate_checkpoint_consistency(checkpoint_path: str):
                         print(
                             f"  ⚠️  MISMATCH: Optimizer steps ({opt_steps}) != checkpoint step ({step})"
                         )
-                        print(f"     This might indicate an inconsistent checkpoint!")
+                        print("     This might indicate an inconsistent checkpoint!")
         else:
-            print(f"  ⚠️  Optimizer state exists but appears empty")
+            print("  ⚠️  Optimizer state exists but appears empty")
     else:
-        print(f"  ❌ No optimizer state found")
+        print("  ❌ No optimizer state found")
 
     # Check model files
-    print(f"\n📁 MODEL FILES:")
+    print("\n📁 MODEL FILES:")
     model_files = ["pytorch_model.bin", "model.safetensors", "config.json"]
     for fname in model_files:
         fpath = checkpoint_dir / fname
@@ -132,7 +133,7 @@ def validate_checkpoint_consistency(checkpoint_path: str):
         print(
             f"✅ Safe to resume - will start epoch {epoch + 1 if epoch != 'N/A' else '?'}"
         )
-        print(f"✅ No batches will be skipped or duplicated")
+        print("✅ No batches will be skipped or duplicated")
     else:
         if total_batches != "N/A" and step < total_batches:
             wasted_batches = total_batches - step
@@ -142,9 +143,9 @@ def validate_checkpoint_consistency(checkpoint_path: str):
                 f"⚠️  {wasted_batches} batches may have been trained AFTER this checkpoint"
             )
             print(f"   (estimated ~{wasted_time_min:.1f} minutes of wasted work)")
-            print(f"✅ When resuming: Will correctly train all remaining batches")
-            print(f"✅ No batches will be permanently skipped")
-            print(f"⚠️  Some batches may be trained twice (this is expected)")
+            print("✅ When resuming: Will correctly train all remaining batches")
+            print("✅ No batches will be permanently skipped")
+            print("⚠️  Some batches may be trained twice (this is expected)")
 
     print("=" * 70)
 

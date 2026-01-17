@@ -4,9 +4,9 @@ Usage: python scripts/cleanup_checkpoints.py --checkpoint_dir <path> [--keep-las
 """
 
 import argparse
+import re
 import shutil
 from pathlib import Path
-import re
 
 
 def cleanup_mid_epoch_checkpoints(checkpoint_dir: str, keep_last: int = 0):

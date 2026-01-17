@@ -131,7 +131,7 @@ def test_trainer_extract_features(dummy_model, dummy_dataloader, device):
         )
 
         # Extract features
-        features = trainer.extract_features(dummy_dataloader)
+        features = trainer.extract_features(dummy_dataloader, mode="embedding")
 
         # Check shape (10 samples, 768 hidden dimensions for CodeBERT)
         assert features.shape == (10, 768)

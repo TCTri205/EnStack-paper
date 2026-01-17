@@ -39,13 +39,13 @@ def test_prepare_meta_features(mock_data):
     features, labels = mock_data
 
     # Test with labels
-    meta_features, out_labels = prepare_meta_features(features, labels)
+    meta_features, out_labels, _, _ = prepare_meta_features(features, labels)
     expected_dim = len(features) * features[0].shape[1]
     assert meta_features.shape == (20, expected_dim)
     assert np.array_equal(out_labels, labels)
 
     # Test without labels
-    meta_features, out_labels = prepare_meta_features(features)
+    meta_features, out_labels, _, _ = prepare_meta_features(features)
     assert meta_features.shape == (20, expected_dim)
     assert out_labels is None
 
@@ -64,6 +64,7 @@ def test_create_meta_classifier():
     # Test xgboost if available (optional)
     try:
         import xgboost  # noqa: F401
+
         clf = create_meta_classifier("xgboost")
         assert clf is not None
     except ImportError:
@@ -77,9 +78,11 @@ def test_create_meta_classifier():
 def test_train_meta_classifier(mock_data):
     features, labels = mock_data
     # Prepare single concatenated feature matrix
-    meta_features, _ = prepare_meta_features(features)
+    meta_features, _, _, _ = prepare_meta_features(features)
 
-    clf = train_meta_classifier(meta_features, labels, classifier_type="rf", n_estimators=10)
+    clf = train_meta_classifier(
+        meta_features, labels, classifier_type="rf", n_estimators=10
+    )
     assert clf is not None
     # Check if fitted
     assert hasattr(clf, "predict")
@@ -87,9 +90,11 @@ def test_train_meta_classifier(mock_data):
 
 def test_evaluate_meta_classifier(mock_data):
     features, labels = mock_data
-    meta_features, _ = prepare_meta_features(features)
+    meta_features, _, _, _ = prepare_meta_features(features)
 
-    clf = train_meta_classifier(meta_features, labels, classifier_type="rf", n_estimators=10)
+    clf = train_meta_classifier(
+        meta_features, labels, classifier_type="rf", n_estimators=10
+    )
 
     metrics = evaluate_meta_classifier(clf, meta_features, labels)
     assert "accuracy" in metrics
@@ -100,8 +105,10 @@ def test_evaluate_meta_classifier(mock_data):
 
 def test_save_load_meta_classifier(mock_data):
     features, labels = mock_data
-    meta_features, _ = prepare_meta_features(features)
-    clf = train_meta_classifier(meta_features, labels, classifier_type="rf", n_estimators=10)
+    meta_features, _, _, _ = prepare_meta_features(features)
+    clf = train_meta_classifier(
+        meta_features, labels, classifier_type="rf", n_estimators=10
+    )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         save_path = Path(tmpdir) / "meta_model.pkl"

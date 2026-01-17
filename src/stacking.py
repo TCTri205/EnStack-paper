@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
-from sklearn.decomposition import PCA, TruncatedSVD
+import torch
+from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -385,6 +386,7 @@ class StackingEnsemble:
         """
         from sklearn.model_selection import KFold
         from torch.utils.data import DataLoader, Subset
+
         from .dataset import DataCollatorWithPadding
 
         logger.info(
@@ -445,6 +447,41 @@ class StackingEnsemble:
         )
 
         logger.info("Stacking ensemble fitting (with OOF) completed")
+
+    def fit(self, train_loaders: List, train_labels: np.ndarray) -> None:
+        """
+        Fits the meta-classifier using features extracted from base models on the provided loaders.
+
+        Args:
+            train_loaders (List): List of DataLoaders for each base model.
+            train_labels (np.ndarray): Training labels.
+        """
+        if len(train_loaders) != len(self.base_models):
+            raise ValueError(
+                f"Number of loaders ({len(train_loaders)}) must match "
+                f"number of base models ({len(self.base_models)})"
+            )
+
+        # Extract features
+        base_features = []
+        for model, loader in zip(self.base_models, train_loaders):
+            features = model.extract_features(loader)
+            base_features.append(features)
+
+        # Prepare meta-features
+        meta_features, _, self.pca_model, self.scaler = prepare_meta_features(
+            base_features,
+            train_labels,
+            use_pca=self.use_pca,
+            pca_components=self.pca_components,
+            use_scaling=self.use_scaling,
+        )
+
+        # Train meta-classifier
+        self.meta_classifier = train_meta_classifier(
+            meta_features, train_labels, self.meta_classifier_type, **self.meta_kwargs
+        )
+        logger.info("Stacking ensemble fitting completed")
 
     def predict(self, test_loaders: List) -> np.ndarray:
         """

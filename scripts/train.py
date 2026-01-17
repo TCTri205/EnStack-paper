@@ -14,21 +14,21 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple  # noqa: E402
 
-import numpy as np
+import numpy as np  # noqa: E402
 
-from src.dataset import create_dataloaders
-from src.models import create_model
-from src.stacking import (
+from src.dataset import create_dataloaders  # noqa: E402
+from src.models import create_model  # noqa: E402
+from src.stacking import (  # noqa: E402
     evaluate_meta_classifier,
     prepare_meta_features,
     save_meta_classifier,
     train_meta_classifier,
 )
-from src.trainer import EnStackTrainer
-from src.utils import get_device, load_config, set_seed, setup_logging
-from src.visualization import (
+from src.trainer import EnStackTrainer  # noqa: E402
+from src.utils import get_device, load_config, set_seed, setup_logging  # noqa: E402
+from src.visualization import (  # noqa: E402
     plot_confusion_matrix,
     plot_meta_feature_importance,
     plot_training_history,
@@ -244,7 +244,7 @@ def train_base_models(
                     f"⚠️  Only found mid-epoch recovery checkpoint: {recovery_checkpoint}"
                 )
                 logger.warning(
-                    f"   This means the last epoch did not complete successfully."
+                    "   This means the last epoch did not complete successfully."
                 )
                 resume_path = str(recovery_checkpoint)
             else:
@@ -430,7 +430,7 @@ def main():
     # Check for pyarrow (needed for parquet lazy loading)
     if config["training"].get("lazy_loading", False):
         try:
-            import pyarrow
+            import pyarrow  # noqa: F401
         except ImportError:
             logger.warning(
                 "pyarrow not installed. Lazy loading with Parquet will fail. Install with: pip install pyarrow"
