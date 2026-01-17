@@ -355,7 +355,8 @@ def create_model(
     )
 
     # Create tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(hf_model_name)
-    logger.info(f"Created tokenizer for {hf_model_name}")
+    # OPTIMIZATION: Enforce Fast Tokenizer (Rust-based)
+    tokenizer = AutoTokenizer.from_pretrained(hf_model_name, use_fast=True)
+    logger.info(f"Created tokenizer for {hf_model_name} (use_fast=True)")
 
     return model, tokenizer

@@ -112,8 +112,11 @@ def set_seed(seed: int = 42, deterministic: bool = False) -> None:
         else:
             # Faster but may have minor non-determinism
             torch.backends.cudnn.deterministic = False
-            torch.backends.cudnn.benchmark = True
-            logging.info(f"Random seed set to {seed} (optimized mode)")
+            # OPTIMIZATION: Disable benchmark for dynamic padding (avoids re-benchmarking overhead)
+            torch.backends.cudnn.benchmark = False
+            logging.info(
+                f"Random seed set to {seed} (optimized mode, cudnn.benchmark=False)"
+            )
     else:
         logging.info(f"Random seed set to {seed}")
 

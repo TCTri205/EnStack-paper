@@ -155,6 +155,7 @@ def create_meta_classifier(classifier_type: str = "svm", **kwargs) -> Any:
             max_iter=kwargs.get("max_iter", 200),
             solver=kwargs.get("solver", "liblinear"),
             random_state=kwargs.get("random_state", 42),
+            n_jobs=kwargs.get("n_jobs", -1),  # OPTIMIZATION: Use all cores
         )
         logger.info("Created Logistic Regression meta-classifier")
 
@@ -163,6 +164,7 @@ def create_meta_classifier(classifier_type: str = "svm", **kwargs) -> Any:
             n_estimators=kwargs.get("n_estimators", 200),
             max_depth=kwargs.get("max_depth", 10),
             random_state=kwargs.get("random_state", 42),
+            n_jobs=kwargs.get("n_jobs", -1),  # OPTIMIZATION: Use all cores
         )
         logger.info("Created Random Forest meta-classifier")
 
@@ -176,6 +178,7 @@ def create_meta_classifier(classifier_type: str = "svm", **kwargs) -> Any:
                 max_depth=kwargs.get("max_depth", 6),
                 eval_metric=kwargs.get("eval_metric", "mlogloss"),
                 random_state=kwargs.get("random_state", 42),
+                n_jobs=kwargs.get("n_jobs", -1),  # OPTIMIZATION: Use all cores
             )
             logger.info("Created XGBoost meta-classifier")
         except ImportError as e:

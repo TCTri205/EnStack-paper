@@ -968,32 +968,77 @@ class EnStackTrainer:
 
         # Extract features
         self.model.eval()
-        all_features = []
+
+        # OPTIMIZATION: Zero-Copy Memory Management
+        # Pre-allocate numpy array to avoid list append overhead and RAM spikes
+        # First, determine feature dimension from the model config or a dummy pass
+        num_samples = len(loader.dataset)
+        feature_dim = (
+            self.model.num_labels if mode == "logits" else 768
+        )  # Approximate default
+
+        # We'll use a dynamic list for the first batch to get exact dimension,
+        # then allocate the full array.
+        features_array = None
+        start_idx = 0
 
         progress_bar = tqdm(loader, desc=f"Extracting {mode}", leave=False)
 
         # Use inference_mode for maximum performance during inference
         with torch.inference_mode():
-            for batch in progress_bar:
-                input_ids = batch["input_ids"].to(self.device, non_blocking=True)
-                attention_mask = batch["attention_mask"].to(
-                    self.device, non_blocking=True
-                )
-
-                if mode == "embedding":
-                    # Get hidden states with specified pooling strategy
-                    features = self.model.get_embedding(
-                        input_ids, attention_mask, pooling=pooling
+            # OPTIMIZATION: Enable AMP (FP16) for inference speedup and lower VRAM
+            with torch.cuda.amp.autocast(enabled=self.use_amp):
+                for batch in progress_bar:
+                    input_ids = batch["input_ids"].to(self.device, non_blocking=True)
+                    attention_mask = batch["attention_mask"].to(
+                        self.device, non_blocking=True
                     )
-                else:
-                    # Get logits (num_labels dim)
-                    features = self.model.get_logits(input_ids, attention_mask)
-                    # Convert to probabilities
-                    features = torch.softmax(features, dim=-1)
 
-                all_features.append(features.cpu().numpy())
+                    if mode == "embedding":
+                        # Get hidden states with specified pooling strategy
+                        batch_features = self.model.get_embedding(
+                            input_ids, attention_mask, pooling=pooling
+                        )
+                    else:
+                        # Get logits (num_labels dim)
+                        batch_features = self.model.get_logits(
+                            input_ids, attention_mask
+                        )
+                        # Convert to probabilities
+                        batch_features = torch.softmax(batch_features, dim=-1)
 
-        features = np.concatenate(all_features, axis=0)
+                    # Move to CPU numpy
+                    batch_features_np = batch_features.cpu().numpy()
+                    batch_size = batch_features_np.shape[0]
+
+                    # Initialize pre-allocated array on first batch
+                    if features_array is None:
+                        feature_dim = batch_features_np.shape[1]
+                        features_array = np.zeros(
+                            (num_samples, feature_dim), dtype=np.float32
+                        )
+
+                    # Fill buffer directly (Zero-Copy)
+                    end_idx = start_idx + batch_size
+                    # Handle potential size mismatch (e.g., drop_last=True or inconsistent length)
+                    if end_idx > num_samples:
+                        # Resize if dataset length was underestimated
+                        logger.warning(
+                            f"Dataset length mismatch! Resizing buffer from {num_samples} to {end_idx}"
+                        )
+                        new_array = np.zeros((end_idx, feature_dim), dtype=np.float32)
+                        new_array[:start_idx] = features_array[:start_idx]
+                        features_array = new_array
+                        num_samples = end_idx
+
+                    features_array[start_idx:end_idx] = batch_features_np
+                    start_idx = end_idx
+
+        # Trim if dataset length was overestimated (e.g. distributed sampling)
+        if start_idx < num_samples:
+            features_array = features_array[:start_idx]
+
+        features = features_array
         logger.info(
             f"Extracted {mode} (pooling={pooling if mode == 'embedding' else 'N/A'}) "
             f"with shape: {features.shape}"

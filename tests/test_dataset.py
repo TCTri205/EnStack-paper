@@ -131,7 +131,10 @@ def test_create_dataloaders(sample_data_file, tokenizer):
 
 def test_dataset_labels(sample_data_file, tokenizer):
     """Test that labels are correctly loaded."""
-    dataset = VulnerabilityDataset(sample_data_file, tokenizer, max_length=64)
+    # OPTIMIZATION: Disable smart_batching to preserve original order for testing
+    dataset = VulnerabilityDataset(
+        sample_data_file, tokenizer, max_length=64, smart_batching=False
+    )
 
     labels = [dataset[i]["labels"].item() for i in range(len(dataset))]
     assert labels == [0, 1, 0]

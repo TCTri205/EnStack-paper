@@ -121,6 +121,7 @@ class VulnerabilityDataset(Dataset):
         label_column: str = "target",
         lazy_loading: bool = False,
         cache_tokenization: bool = False,
+        smart_batching: bool = True,
     ) -> None:
         """
         Initialize the VulnerabilityDataset.
@@ -134,6 +135,8 @@ class VulnerabilityDataset(Dataset):
             lazy_loading (bool): If True, uses lazy loading to reduce memory usage.
             cache_tokenization (bool): If True, caches tokenized inputs to disk
                 to avoid re-tokenizing in every epoch. Recommended for large datasets.
+            smart_batching (bool): If True, sorts dataset by sequence length to minimize padding.
+                Only applies when lazy_loading=False. Default: True.
 
         Raises:
             FileNotFoundError: If the data file does not exist.
@@ -146,6 +149,7 @@ class VulnerabilityDataset(Dataset):
         self.lazy_loading = lazy_loading
         self.data_path = data_path
         self.cache_tokenization = cache_tokenization
+        self.smart_batching = smart_batching
         self.samples: List[Dict[str, torch.Tensor]] = []
 
         # Load data
@@ -180,6 +184,17 @@ class VulnerabilityDataset(Dataset):
             # OPTIMIZATION: Pre-tokenize all data into RAM if not lazy loading
             # This avoids repeated tokenization and disk I/O during training
             self._pre_tokenize_data()
+
+            # OPTIMIZATION: Smart Batching (Sort by length)
+            # Sorting samples by length reduces padding significantly during batched inference
+            # We sort descending to handle longest sequences first (often helps with OOM early detection)
+            # Note: DataLoader with shuffle=True will undo this for training (which is desired),
+            # but DataLoader with shuffle=False (Val/Test) will benefit immensely.
+            if self.smart_batching:
+                self.samples.sort(key=lambda x: x["input_ids"].shape[0], reverse=True)
+                logger.info(
+                    "Dataset sorted by sequence length (Smart Batching enabled)"
+                )
 
         logger.info(
             f"Loaded {len(self)} samples from {data_path} "
@@ -652,6 +667,8 @@ def create_dataloaders_from_hf_dataset(
             truncation=True,
         )
         encodings["labels"] = examples[label_column]
+        # OPTIMIZATION: Add length for Smart Batching
+        encodings["length"] = [len(x) for x in encodings["input_ids"]]
         return encodings
 
     # Apply tokenization with multiprocessing
@@ -663,6 +680,17 @@ def create_dataloaders_from_hf_dataset(
         remove_columns=dataset[train_split].column_names,
         desc="Tokenizing",
     )
+
+    # OPTIMIZATION: Sort by length for Smart Batching (Desc)
+    # This optimizes inference speed by grouping similar length sequences
+    logger.info("Sorting dataset by length for Smart Batching...")
+    for split in tokenized_dataset:
+        try:
+            tokenized_dataset[split] = tokenized_dataset[split].sort(
+                "length", reverse=True
+            )
+        except Exception as e:
+            logger.warning(f"Could not sort split {split}: {e}")
 
     # Set format to PyTorch tensors
     tokenized_dataset.set_format(
