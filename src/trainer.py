@@ -389,31 +389,41 @@ class EnStackTrainer:
 
         logger.info(f"Checkpoint saved to {save_path}")
 
-    def extract_features(self, loader: DataLoader) -> np.ndarray:
+    def extract_features(self, loader: DataLoader, mode: str = "logits") -> np.ndarray:
         """
-        Extracts feature embeddings from the model for stacking.
+        Extracts features (embeddings or logits) from the model for stacking.
 
         Args:
             loader (DataLoader): DataLoader containing data.
+            mode (str): Type of features to extract ('logits' or 'embedding').
+                'logits' returns probability distributions (standard for stacking).
+                'embedding' returns hidden states (high-dimensional).
 
         Returns:
-            np.ndarray: Feature embeddings (shape: [num_samples, hidden_size]).
+            np.ndarray: Extracted features (shape: [num_samples, feature_dim]).
         """
         self.model.eval()
         all_features = []
 
-        progress_bar = tqdm(loader, desc="Extracting features", leave=False)
+        progress_bar = tqdm(loader, desc=f"Extracting {mode}", leave=False)
 
         with torch.no_grad():
             for batch in progress_bar:
                 input_ids = batch["input_ids"].to(self.device)
                 attention_mask = batch["attention_mask"].to(self.device)
 
-                # Get embeddings
-                embeddings = self.model.get_embedding(input_ids, attention_mask)
-                all_features.append(embeddings.cpu().numpy())
+                if mode == "embedding":
+                    # Get hidden states (768 dim)
+                    features = self.model.get_embedding(input_ids, attention_mask)
+                else:
+                    # Get logits (num_labels dim)
+                    features = self.model.get_logits(input_ids, attention_mask)
+                    # Convert to probabilities
+                    features = torch.softmax(features, dim=-1)
+
+                all_features.append(features.cpu().numpy())
 
         features = np.concatenate(all_features, axis=0)
-        logger.info(f"Extracted features with shape: {features.shape}")
+        logger.info(f"Extracted {mode} with shape: {features.shape}")
 
         return cast(np.ndarray, features)

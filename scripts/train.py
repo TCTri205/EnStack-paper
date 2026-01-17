@@ -191,9 +191,15 @@ def train_base_models(
         )
 
         # Train
-        history = trainer.train(
-            num_epochs=num_epochs, save_best=True, resume_from=resume_path
-        )
+        if num_epochs > 0:
+            history = trainer.train(
+                num_epochs=num_epochs, save_best=True, resume_from=resume_path
+            )
+        elif resume_path:
+            logger.info(f"Loading weights from {resume_path} (epochs=0)...")
+            trainer.load_checkpoint(resume_path)
+        else:
+            logger.warning(f"epochs=0 and no resume_path for {model_name}. Skipping.")
 
         # Evaluate on test set
         if test_loader is not None:
@@ -206,20 +212,21 @@ def train_base_models(
     return trainers
 
 
-def extract_all_features(config: Dict, trainers: Dict) -> Dict:
+def extract_all_features(config: Dict, trainers: Dict, mode: str = "logits") -> Dict:
     """
     Extracts features from all base models.
 
     Args:
         config (Dict): Configuration dictionary.
         trainers (Dict): Dictionary of trained trainers.
+        mode (str): Type of features to extract ('logits' or 'embedding').
 
     Returns:
         Dict: Dictionary containing feature arrays for each split.
     """
     logger = logging.getLogger("EnStack")
     logger.info("=" * 60)
-    logger.info("EXTRACTING FEATURES FOR STACKING")
+    logger.info(f"EXTRACTING {mode.upper()} FOR STACKING")
     logger.info("=" * 60)
 
     train_features_list = []
@@ -227,7 +234,7 @@ def extract_all_features(config: Dict, trainers: Dict) -> Dict:
     test_features_list = []
 
     for model_name, trainer in trainers.items():
-        logger.info(f"Extracting features from {model_name}...")
+        logger.info(f"Extracting {mode} from {model_name}...")
 
         # Get tokenizer
         from transformers import AutoTokenizer
@@ -241,15 +248,15 @@ def extract_all_features(config: Dict, trainers: Dict) -> Dict:
 
         # Extract features
         if train_loader:
-            train_features = trainer.extract_features(train_loader)
+            train_features = trainer.extract_features(train_loader, mode=mode)
             train_features_list.append(train_features)
 
         if val_loader:
-            val_features = trainer.extract_features(val_loader)
+            val_features = trainer.extract_features(val_loader, mode=mode)
             val_features_list.append(val_features)
 
         if test_loader:
-            test_features = trainer.extract_features(test_loader)
+            test_features = trainer.extract_features(test_loader, mode=mode)
             test_features_list.append(test_features)
 
     return {

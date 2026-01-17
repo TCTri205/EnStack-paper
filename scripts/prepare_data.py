@@ -2,9 +2,9 @@
 Data preparation script for EnStack.
 
 This script provides multiple options to prepare vulnerability detection data:
-1. Use a publicly available vulnerability dataset from Hugging Face
-2. Generate synthetic data for testing
-3. Manual upload guide for Draper VDISC
+1. Process Draper VDISC HDF5 files (RECOMMENDED for paper results)
+2. Use a publicly available vulnerability dataset from Hugging Face
+3. Generate synthetic data for testing
 """
 
 import logging
@@ -12,6 +12,7 @@ import os
 import pickle
 import pandas as pd
 import numpy as np
+import h5py
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -22,6 +23,22 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger("DataPrep")
+
+# Mapping from column name in HDF5 to Class ID
+CWE_MAPPING = {
+    "CWE-119": 0,
+    "CWE-120": 1,
+    "CWE-469": 2,
+    "CWE-476": 3,
+    "CWE-other": 4,
+}
+
+# Target distribution from Table I of EnStack paper
+PAPER_COUNTS = {
+    "train": {0: 5942, 1: 5777, 2: 249, 3: 2755, 4: 5582},
+    "val": {0: 1142, 1: 1099, 2: 53, 3: 535, 4: 1071},
+    "test": {0: 1142, 1: 1099, 2: 53, 3: 535, 4: 1071},
+}
 
 
 def generate_synthetic_data(output_dir: str, num_samples: Dict[str, int]):
@@ -138,6 +155,135 @@ def use_public_vulnerability_dataset(output_dir: str, sample_size: int = None):
         return False
 
 
+def process_draper_files(data_dir: str, output_dir: str, match_paper: bool = False):
+    """
+    Process raw Draper VDISC HDF5 files to create preprocessed pkl files.
+
+    Args:
+        data_dir: Directory containing .hdf5 files
+        output_dir: Directory to save processed .pkl files
+        match_paper: If True, downsample to match EnStack paper distribution
+    """
+    logger.info("Processing Draper VDISC HDF5 files...")
+    input_path = Path(data_dir)
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Expected filenames
+    files = {
+        "train": "VDISC_train.hdf5",
+        "val": "VDISC_validate.hdf5",
+        "test": "VDISC_test.hdf5",
+    }
+
+    for split, filename in files.items():
+        filepath = input_path / filename
+        if not filepath.exists():
+            logger.warning(
+                f"File {filename} not found in {input_path}. Skipping {split}."
+            )
+            continue
+
+        logger.info(f"Processing {split} split: {filepath}")
+
+        try:
+            with h5py.File(filepath, "r") as f:
+                keys = list(f.keys())
+                logger.info(f"Keys in HDF5: {keys}")
+
+                if "functionSource" not in keys:
+                    logger.error(f"Invalid HDF5 format. Missing 'functionSource'.")
+                    continue
+
+                # Read CWE columns
+                cwe_cols = [c for c in CWE_MAPPING.keys() if c in keys]
+                logger.info(f"Found CWE columns: {cwe_cols}")
+
+                # Create labels dataframe
+                df_labels = pd.DataFrame()
+                for col in cwe_cols:
+                    df_labels[col] = f[col][:]
+
+                logger.info(f"Total samples in {split}: {len(df_labels)}")
+
+                # Assign labels with priority
+                df_labels["target"] = -1
+
+                if "CWE-other" in cwe_cols:
+                    df_labels.loc[df_labels["CWE-other"] == True, "target"] = 4
+                if "CWE-476" in cwe_cols:
+                    df_labels.loc[df_labels["CWE-476"] == True, "target"] = 3
+                if "CWE-469" in cwe_cols:
+                    df_labels.loc[df_labels["CWE-469"] == True, "target"] = 2
+                if "CWE-120" in cwe_cols:
+                    df_labels.loc[df_labels["CWE-120"] == True, "target"] = 1
+                if "CWE-119" in cwe_cols:
+                    df_labels.loc[df_labels["CWE-119"] == True, "target"] = 0
+
+                # Filter valid samples
+                valid_indices = df_labels[df_labels["target"] != -1].index
+                logger.info(f"Found {len(valid_indices)} vulnerable samples.")
+
+                # Downsampling
+                final_indices = []
+
+                if match_paper and split in PAPER_COUNTS:
+                    target_counts = PAPER_COUNTS[split]
+                    logger.info(f"Downsampling to match paper distribution...")
+
+                    for label, count in target_counts.items():
+                        label_indices = df_labels[
+                            df_labels["target"] == label
+                        ].index.tolist()
+                        if len(label_indices) >= count:
+                            selected = np.random.choice(
+                                label_indices, count, replace=False
+                            )
+                        else:
+                            logger.warning(
+                                f"Label {label} has fewer samples than needed. Using all."
+                            )
+                            selected = label_indices
+                        final_indices.extend(selected)
+                else:
+                    final_indices = valid_indices.tolist()
+
+                final_indices = sorted(final_indices)
+                logger.info(f"Selected {len(final_indices)} samples for final dataset.")
+
+                # Read source code
+                logger.info("Reading source code... (this may take a moment)")
+                raw_sources = f["functionSource"]
+                sources = []
+
+                for i in final_indices:
+                    sources.append(raw_sources[i].decode("utf-8"))
+
+                # Create final dataframe
+                df_final = pd.DataFrame(
+                    {
+                        "func": sources,
+                        "target": df_labels.loc[final_indices, "target"].values,
+                    }
+                )
+
+                # Save
+                output_file = output_path / f"{split}_processed.pkl"
+                df_final.to_pickle(output_file)
+                logger.info(f"Saved processed data to {output_file}")
+                logger.info(
+                    f"Class distribution:\n{df_final['target'].value_counts().sort_index()}"
+                )
+
+        except Exception as e:
+            logger.error(f"Error processing {filepath}: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+    logger.info("✅ Draper VDISC processing complete!")
+
+
 def print_manual_upload_guide(output_dir: str):
     """Print instructions for manually uploading Draper VDISC data."""
     logger.info("\n" + "=" * 60)
@@ -173,7 +319,7 @@ if __name__ == "__main__":
         "--mode",
         type=str,
         default="auto",
-        choices=["auto", "synthetic", "public", "manual"],
+        choices=["auto", "synthetic", "public", "draper"],
         help="Data preparation mode",
     )
     parser.add_argument(
@@ -197,11 +343,52 @@ if __name__ == "__main__":
     parser.add_argument(
         "--test_size", type=int, default=2000, help="Test samples for synthetic mode"
     )
+    parser.add_argument(
+        "--draper_dir",
+        type=str,
+        default=None,
+        help="Directory containing Draper VDISC HDF5 files (for draper mode)",
+    )
+    parser.add_argument(
+        "--match_paper",
+        action="store_true",
+        help="Downsample Draper data to match paper counts exactly",
+    )
 
     args = parser.parse_args()
 
-    # Auto mode: try public dataset, fallback to synthetic
+    # Auto mode: check for draper files first, then public, fallback to synthetic
     if args.mode == "auto":
+        draper_dir = args.draper_dir or f"{args.output_dir}/raw_data"
+        if Path(draper_dir).exists() and any(Path(draper_dir).glob("*.hdf5")):
+            logger.info(
+                f"Auto mode: Found HDF5 files in {draper_dir}. Processing Draper data..."
+            )
+            process_draper_files(draper_dir, args.output_dir, args.match_paper)
+        else:
+            logger.info("Auto mode: Attempting to use public dataset...")
+            success = use_public_vulnerability_dataset(args.output_dir, args.sample)
+
+            if not success:
+                logger.info("Public dataset failed, using synthetic data...")
+                num_samples = {
+                    "train": args.sample or args.train_size,
+                    "val": args.sample or args.val_size,
+                    "test": args.sample or args.test_size,
+                }
+                generate_synthetic_data(args.output_dir, num_samples)
+
+    elif args.mode == "draper":
+        draper_dir = args.draper_dir or f"{args.output_dir}/raw_data"
+        if not Path(draper_dir).exists():
+            logger.error(
+                f"Draper directory not found: {draper_dir}. Please provide --draper_dir."
+            )
+            print_manual_upload_guide(args.output_dir)
+        else:
+            process_draper_files(draper_dir, args.output_dir, args.match_paper)
+
+    elif args.mode == "synthetic":
         logger.info("Auto mode: Attempting to use public dataset...")
         success = use_public_vulnerability_dataset(args.output_dir, args.sample)
 
@@ -228,8 +415,5 @@ if __name__ == "__main__":
             logger.error(
                 "Failed to download public dataset. Try synthetic mode instead."
             )
-
-    elif args.mode == "manual":
-        print_manual_upload_guide(args.output_dir)
 
     logger.info("\n🎉 Data preparation script completed!")

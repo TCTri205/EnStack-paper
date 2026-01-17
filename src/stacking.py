@@ -19,6 +19,7 @@ from sklearn.metrics import (
     f1_score,
     precision_score,
     recall_score,
+    roc_auc_score,
 )
 from sklearn.svm import SVC
 
@@ -190,17 +191,30 @@ def evaluate_meta_classifier(
     )
     recall = recall_score(labels, predictions, average="weighted", zero_division=0)
 
+    # AUC calculation
+    try:
+        if hasattr(classifier, "predict_proba"):
+            probs = classifier.predict_proba(meta_features)
+            # Use multi-class AUC (One-vs-Rest)
+            auc = roc_auc_score(labels, probs, multi_class="ovr", average="weighted")
+        else:
+            auc = 0.0
+    except Exception as e:
+        logger.warning(f"Could not calculate AUC: {e}")
+        auc = 0.0
+
     metrics = {
         "accuracy": accuracy,
         "f1": f1,
         "precision": precision,
         "recall": recall,
+        "auc": auc,
     }
 
     # Log results
     logger.info(
         f"Meta-classifier Evaluation - Acc: {accuracy:.4f}, F1: {f1:.4f}, "
-        f"Precision: {precision:.4f}, Recall: {recall:.4f}"
+        f"Precision: {precision:.4f}, Recall: {recall:.4f}, AUC: {auc:.4f}"
     )
 
     # Generate classification report
