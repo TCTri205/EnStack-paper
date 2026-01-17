@@ -45,8 +45,8 @@ training:
   # Advanced Training Options
   scheduler: "cosine"        # Options: linear, cosine
   use_amp: True              # Automatic Mixed Precision
-  use_swa: False             # Stochastic Weight Averaging
-  swa_start: 5
+  use_swa: True              # Stochastic Weight Averaging (Recommended for best results)
+  swa_start: 6               # Start SWA at epoch 6 (for 10-epoch training)
   gradient_accumulation_steps: 1
   early_stopping_patience: 3
   early_stopping_metric: "f1"
