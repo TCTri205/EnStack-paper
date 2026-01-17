@@ -250,29 +250,41 @@ class EnStackTrainer:
         # Adjust total batches for progress bar if resuming
         total_batches = len(self.train_loader)
 
+        # Optimize: Use itertools to skip batches without loading them
+        import itertools
+
         # Create progress bar that shows actual remaining work
         if resume_step > 0:
             remaining_batches = total_batches - resume_step
             logger.info(
-                f"⏭️  Resuming: will skip {resume_step} batches, "
+                f"⏭️  Resuming: will skip {resume_step} batches (fast-forward), "
                 f"train {remaining_batches} batches"
             )
-
-        progress_bar = tqdm(
-            enumerate(self.train_loader),
-            total=total_batches,
-            desc=f"Epoch {epoch} [Train]",
-            leave=False,
-            initial=resume_step,  # Start counter at resume_step
-        )
+            # Skip the first resume_step batches efficiently without loading
+            train_iterator = itertools.islice(self.train_loader, resume_step, None)
+            # Create progress bar starting from resume_step
+            progress_bar = tqdm(
+                train_iterator,
+                total=remaining_batches,
+                desc=f"Epoch {epoch} [Train]",
+                leave=False,
+            )
+            # Manually track step since we're using islice
+            step_offset = resume_step
+        else:
+            train_iterator = self.train_loader
+            progress_bar = tqdm(
+                train_iterator,
+                total=total_batches,
+                desc=f"Epoch {epoch} [Train]",
+                leave=False,
+            )
+            step_offset = 0
 
         trained_count = 0  # Track actual batches trained (excluding skipped)
 
-        for step, batch in progress_bar:
-            # Skip steps if resuming (fast - just continue)
-            if step < resume_step:
-                continue
-
+        for batch_idx, batch in enumerate(progress_bar):
+            step = step_offset + batch_idx  # Actual step in epoch
             trained_count += 1
 
             # Move batch to device
