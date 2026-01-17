@@ -237,9 +237,14 @@ If you use this code in your research, please cite:
 }
 ```
 
+## 📦 Handover & Quick Start
+
+- **For New Users**: See [QUICKSTART_USER.md](QUICKSTART_USER.md) - Get started in 5 minutes on Colab
+- **For Project Handover**: See [HANDOVER.md](HANDOVER.md) - Complete handover documentation
+
 ## Contact
 
-For questions or issues, please open an issue on GitHub or contact [your-email@example.com].
+For questions or issues, please open an issue on GitHub: https://github.com/TCTri205/EnStack-paper/issues
 
 ## Acknowledgments
 
