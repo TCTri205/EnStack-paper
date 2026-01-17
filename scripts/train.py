@@ -14,7 +14,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -448,8 +448,7 @@ def main():
         logger.info("Skipping base model training (using existing checkpoints)")
         # Load existing models (implementation depends on your checkpoint structure)
         raise NotImplementedError(
-            "Loading from checkpoints not yet implemented. "
-            "Remove --skip-training flag."
+            "Loading from checkpoints not yet implemented. Remove --skip-training flag."
         )
 
     # Step 2: Extract features

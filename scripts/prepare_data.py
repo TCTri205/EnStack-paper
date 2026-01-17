@@ -209,15 +209,15 @@ def process_draper_files(data_dir: str, output_dir: str, match_paper: bool = Fal
                 df_labels["target"] = -1
 
                 if "CWE-other" in cwe_cols:
-                    df_labels.loc[df_labels["CWE-other"] is True, "target"] = 4
+                    df_labels.loc[df_labels["CWE-other"] == True, "target"] = 4
                 if "CWE-476" in cwe_cols:
-                    df_labels.loc[df_labels["CWE-476"] is True, "target"] = 3
+                    df_labels.loc[df_labels["CWE-476"] == True, "target"] = 3
                 if "CWE-469" in cwe_cols:
-                    df_labels.loc[df_labels["CWE-469"] is True, "target"] = 2
+                    df_labels.loc[df_labels["CWE-469"] == True, "target"] = 2
                 if "CWE-120" in cwe_cols:
-                    df_labels.loc[df_labels["CWE-120"] is True, "target"] = 1
+                    df_labels.loc[df_labels["CWE-120"] == True, "target"] = 1
                 if "CWE-119" in cwe_cols:
-                    df_labels.loc[df_labels["CWE-119"] is True, "target"] = 0
+                    df_labels.loc[df_labels["CWE-119"] == True, "target"] = 0
 
                 # Filter valid samples
                 valid_indices = df_labels[df_labels["target"] != -1].index
