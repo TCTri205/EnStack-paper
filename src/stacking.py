@@ -94,15 +94,16 @@ def create_meta_classifier(classifier_type: str = "svm", **kwargs) -> Any:
     elif classifier_type == "lr":
         classifier = LogisticRegression(
             C=kwargs.get("C", 1.0),
-            max_iter=kwargs.get("max_iter", 1000),
+            max_iter=kwargs.get("max_iter", 200),
+            solver=kwargs.get("solver", "liblinear"),
             random_state=kwargs.get("random_state", 42),
         )
         logger.info("Created Logistic Regression meta-classifier")
 
     elif classifier_type == "rf":
         classifier = RandomForestClassifier(
-            n_estimators=kwargs.get("n_estimators", 100),
-            max_depth=kwargs.get("max_depth", None),
+            n_estimators=kwargs.get("n_estimators", 200),
+            max_depth=kwargs.get("max_depth", 10),
             random_state=kwargs.get("random_state", 42),
         )
         logger.info("Created Random Forest meta-classifier")
@@ -115,6 +116,7 @@ def create_meta_classifier(classifier_type: str = "svm", **kwargs) -> Any:
                 n_estimators=kwargs.get("n_estimators", 100),
                 learning_rate=kwargs.get("learning_rate", 0.1),
                 max_depth=kwargs.get("max_depth", 6),
+                eval_metric=kwargs.get("eval_metric", "mlogloss"),
                 random_state=kwargs.get("random_state", 42),
             )
             logger.info("Created XGBoost meta-classifier")
@@ -348,4 +350,6 @@ class StackingEnsemble:
         # Prepare meta-features
         meta_features, _ = prepare_meta_features(base_features)
 
-        return evaluate_meta_classifier(self.meta_classifier, meta_features, test_labels)
+        return evaluate_meta_classifier(
+            self.meta_classifier, meta_features, test_labels
+        )

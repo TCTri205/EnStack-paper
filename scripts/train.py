@@ -301,11 +301,21 @@ def main():
         logger.info("=" * 60)
 
         meta_classifier_type = config["model"].get("meta_classifier", "svm")
+
+        # Get specific parameters for the chosen classifier
+        meta_params = (
+            config["model"]
+            .get("meta_classifier_params", {})
+            .get(meta_classifier_type, {})
+        )
+        logger.info(f"Using meta-classifier params: {meta_params}")
+
         meta_classifier = train_meta_classifier(
             train_meta_features,
             train_labels,
             classifier_type=meta_classifier_type,
             random_state=config["training"]["seed"],
+            **meta_params,
         )
 
         # Save meta-classifier
