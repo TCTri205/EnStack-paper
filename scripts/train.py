@@ -28,6 +28,61 @@ from src.stacking import (
 )
 from src.trainer import EnStackTrainer
 from src.utils import get_device, load_config, set_seed, setup_logging
+from src.visualization import (
+    plot_confusion_matrix,
+    plot_meta_feature_importance,
+    plot_training_history,
+)
+
+
+def log_experiment_results(
+    config: Dict, metrics: Dict, output_dir: str, name: str = "ensemble"
+) -> None:
+    """
+    Logs experiment configuration and results to a CSV file.
+    """
+    import csv
+    from datetime import datetime
+
+    log_file = Path(output_dir) / "experiment_results.csv"
+    file_exists = log_file.exists()
+
+    fieldnames = [
+        "timestamp",
+        "model_name",
+        "base_models",
+        "meta_classifier",
+        "accuracy",
+        "f1",
+        "precision",
+        "recall",
+        "auc",
+        "epochs",
+        "batch_size",
+    ]
+
+    row = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "model_name": name,
+        "base_models": ",".join(config["model"]["base_models"]),
+        "meta_classifier": config["model"].get("meta_classifier", "svm"),
+        "accuracy": metrics.get("accuracy", 0),
+        "f1": metrics.get("f1", 0),
+        "precision": metrics.get("precision", 0),
+        "recall": metrics.get("recall", 0),
+        "auc": metrics.get("auc", 0),
+        "epochs": config["training"]["epochs"],
+        "batch_size": config["training"]["batch_size"],
+    }
+
+    with open(log_file, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+    logger = logging.getLogger("EnStack")
+    logger.info(f"Experiment results logged to {log_file}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -145,7 +200,7 @@ def train_base_models(
     device,
     resume: bool = False,
     save_steps: int = 500,
-) -> Dict:
+) -> Tuple[Dict, Dict]:
     """
     Trains all base models.
 
@@ -158,10 +213,13 @@ def train_base_models(
         save_steps (int): Steps between checkpoints.
 
     Returns:
-        Dict: Dictionary of trained trainers.
+        Tuple[Dict, Dict]: (trainers dict, dataloaders dict)
+            - trainers: Dictionary of trained trainers
+            - dataloaders: Dictionary mapping model_name -> {train/val/test: DataLoader}
     """
     logger = logging.getLogger("EnStack")
     trainers = {}
+    dataloaders = {}
 
     for model_name in model_names:
         logger.info("=" * 60)
@@ -177,20 +235,27 @@ def train_base_models(
             if last_checkpoint.exists():
                 logger.info(f"Found checkpoint at {last_checkpoint}, will resume.")
                 resume_path = str(last_checkpoint)
-
-                # If loading from checkpoint, we don't need pretrained=True strictly,
-                # but we still need to initialize the architecture.
-                # However, create_model initializes the wrapper.
-                # trainer.train(resume_from=...) handles the actual weight loading.
             else:
                 logger.info("No checkpoint found, starting fresh.")
 
         # Create model and tokenizer
-        # Note: If resuming, weights will be overwritten by trainer.load_checkpoint
         model, tokenizer = create_model(model_name, config, pretrained=True)
 
-        # Create dataloaders
-        train_loader, val_loader, test_loader = create_dataloaders(config, tokenizer)
+        # Create dataloaders (ONLY ONCE per model)
+        train_loader, val_loader, test_loader = create_dataloaders(
+            config,
+            tokenizer,
+            use_dynamic_padding=config["training"].get("use_dynamic_padding", True),
+            lazy_loading=config["training"].get("lazy_loading", False),
+            cache_tokenization=config["training"].get("cache_tokenization", True),
+        )
+
+        # Store dataloaders for later use
+        dataloaders[model_name] = {
+            "train": train_loader,
+            "val": val_loader,
+            "test": test_loader,
+        }
 
         # Create trainer
         trainer = EnStackTrainer(
@@ -201,15 +266,31 @@ def train_base_models(
             learning_rate=config["training"]["learning_rate"],
             device=device,
             output_dir=output_dir,
+            use_amp=config["training"].get("use_amp", True),
+            gradient_accumulation_steps=config["training"].get(
+                "gradient_accumulation_steps", 1
+            ),
+            early_stopping_patience=config["training"].get(
+                "early_stopping_patience", 3
+            ),
+            early_stopping_metric=config["training"].get("early_stopping_metric", "f1"),
         )
 
         # Train
         if num_epochs > 0:
-            trainer.train(
+            history = trainer.train(
                 num_epochs=num_epochs,
                 save_best=True,
                 resume_from=resume_path,
                 save_steps=save_steps,
+                scheduler_type=config["training"].get("scheduler", "cosine"),
+                use_swa=config["training"].get("use_swa", False),
+                swa_start=config["training"].get("swa_start", 5),
+            )
+
+            # Plot training history
+            plot_training_history(
+                history, save_path=f"{output_dir}/training_history.png"
             )
         elif resume_path:
             logger.info(f"Loading weights from {resume_path} (epochs=0)...")
@@ -225,17 +306,27 @@ def train_base_models(
         trainers[model_name] = trainer
         logger.info(f"{model_name} training completed\n")
 
-    return trainers
+    return trainers, dataloaders
 
 
-def extract_all_features(config: Dict, trainers: Dict, mode: str = "logits") -> Dict:
+def extract_all_features(
+    config: Dict,
+    trainers: Dict,
+    dataloaders: Dict,
+    mode: str = "logits",
+    pooling: str = "mean",
+    use_cache: bool = True,
+) -> Dict:
     """
     Extracts features from all base models.
 
     Args:
         config (Dict): Configuration dictionary.
         trainers (Dict): Dictionary of trained trainers.
+        dataloaders (Dict): Dictionary of dataloaders (train/val/test) for each model.
         mode (str): Type of features to extract ('logits' or 'embedding').
+        pooling (str): Pooling strategy for embeddings.
+        use_cache (bool): Whether to use feature caching.
 
     Returns:
         Dict: Dictionary containing feature arrays for each split.
@@ -249,30 +340,45 @@ def extract_all_features(config: Dict, trainers: Dict, mode: str = "logits") -> 
     val_features_list = []
     test_features_list = []
 
+    cache_dir = (
+        Path(config["training"]["output_dir"]) / "feature_cache" if use_cache else None
+    )
+
     for model_name, trainer in trainers.items():
         logger.info(f"Extracting {mode} from {model_name}...")
 
-        # Get tokenizer
-        from transformers import AutoTokenizer
+        # Get pre-created dataloaders for this model
+        model_loaders = dataloaders.get(model_name, {})
+        train_loader = model_loaders.get("train")
+        val_loader = model_loaders.get("val")
+        test_loader = model_loaders.get("test")
 
-        tokenizer = AutoTokenizer.from_pretrained(
-            config["model"]["model_map"][model_name]
-        )
-
-        # Create dataloaders
-        train_loader, val_loader, test_loader = create_dataloaders(config, tokenizer)
-
-        # Extract features
+        # Extract features with caching
         if train_loader:
-            train_features = trainer.extract_features(train_loader, mode=mode)
+            cache_path = (
+                str(cache_dir / f"{model_name}_train_{mode}.npy") if cache_dir else None
+            )
+            train_features = trainer.extract_features(
+                train_loader, mode=mode, pooling=pooling, cache_path=cache_path
+            )
             train_features_list.append(train_features)
 
         if val_loader:
-            val_features = trainer.extract_features(val_loader, mode=mode)
+            cache_path = (
+                str(cache_dir / f"{model_name}_val_{mode}.npy") if cache_dir else None
+            )
+            val_features = trainer.extract_features(
+                val_loader, mode=mode, pooling=pooling, cache_path=cache_path
+            )
             val_features_list.append(val_features)
 
         if test_loader:
-            test_features = trainer.extract_features(test_loader, mode=mode)
+            cache_path = (
+                str(cache_dir / f"{model_name}_test_{mode}.npy") if cache_dir else None
+            )
+            test_features = trainer.extract_features(
+                test_loader, mode=mode, pooling=pooling, cache_path=cache_path
+            )
             test_features_list.append(test_features)
 
     return {
@@ -300,9 +406,23 @@ def main():
         config["training"]["output_dir"] = args.output_dir
 
     # Setup logging
-    logger = setup_logging(log_file=args.log_file, level=logging.INFO)
+    output_dir = Path(config["training"]["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger = setup_logging(
+        log_file=args.log_file or str(output_dir / "train.log"), level=logging.INFO
+    )
     logger.info("EnStack Training Pipeline Started")
     logger.info(f"Configuration: {args.config}")
+
+    # Check for pyarrow (needed for parquet lazy loading)
+    if config["training"].get("lazy_loading", False):
+        try:
+            import pyarrow
+        except ImportError:
+            logger.warning(
+                "pyarrow not installed. Lazy loading with Parquet will fail. Install with: pip install pyarrow"
+            )
 
     # Set random seed
     set_seed(config["training"]["seed"])
@@ -316,7 +436,7 @@ def main():
 
     # Step 1: Train base models
     if not args.skip_training:
-        trainers = train_base_models(
+        trainers, dataloaders = train_base_models(
             config,
             model_names,
             num_epochs,
@@ -334,7 +454,14 @@ def main():
 
     # Step 2: Extract features
     if not args.skip_stacking:
-        features_dict = extract_all_features(config, trainers)
+        # Use configuration for extraction mode and pooling
+        mode = config["training"].get("stacking_mode", "logits")
+        pooling = config["training"].get("pooling_mode", "mean")
+
+        # Use cached features if available
+        features_dict = extract_all_features(
+            config, trainers, dataloaders, mode=mode, pooling=pooling, use_cache=True
+        )
 
         # Load labels
         root_dir = Path(config["data"]["root_dir"])
@@ -342,13 +469,33 @@ def main():
         val_labels = load_labels_from_file(root_dir / config["data"]["val_file"])
         test_labels = load_labels_from_file(root_dir / config["data"]["test_file"])
 
-        # Prepare meta-features
-        train_meta_features, _ = prepare_meta_features(
-            features_dict["train"], train_labels
+        # Prepare meta-features with PCA and Scaling
+        use_pca = config["training"].get("use_pca", True)
+        pca_components = config["training"].get("pca_components", None)
+        use_scaling = config["training"].get("use_scaling", True)
+
+        train_meta_features, _, pca_model, scaler = prepare_meta_features(
+            features_dict["train"],
+            train_labels,
+            use_pca=use_pca,
+            pca_components=pca_components,
+            use_scaling=use_scaling,
         )
-        val_meta_features, _ = prepare_meta_features(features_dict["val"], val_labels)
-        test_meta_features, _ = prepare_meta_features(
-            features_dict["test"], test_labels
+        val_meta_features, _, _, _ = prepare_meta_features(
+            features_dict["val"],
+            val_labels,
+            pca_model=pca_model,
+            scaler=scaler,
+            use_pca=use_pca,
+            use_scaling=use_scaling,
+        )
+        test_meta_features, _, _, _ = prepare_meta_features(
+            features_dict["test"],
+            test_labels,
+            pca_model=pca_model,
+            scaler=scaler,
+            use_pca=use_pca,
+            use_scaling=use_scaling,
         )
 
         # Step 3: Train meta-classifier
@@ -392,6 +539,35 @@ def main():
         test_metrics = evaluate_meta_classifier(
             meta_classifier, test_meta_features, test_labels
         )
+
+        # Step 5: Advanced Visualization & Logging
+        logger.info("=" * 60)
+        logger.info("FINAL VISUALIZATION & LOGGING")
+        logger.info("=" * 60)
+
+        # Plot confusion matrix
+        plot_confusion_matrix(
+            test_labels,
+            meta_classifier.predict(test_meta_features),
+            save_path=f"{config['training']['output_dir']}/confusion_matrix.png",
+        )
+
+        # Plot feature importance
+        feature_names = []
+        for model_name in model_names:
+            # Add features for each class if it's probability mode
+            num_classes = config["model"].get("num_labels", 5)
+            for c in range(num_classes):
+                feature_names.append(f"{model_name}_prob_{c}")
+
+        plot_meta_feature_importance(
+            meta_classifier,
+            feature_names,
+            save_path=f"{config['training']['output_dir']}/feature_importance.png",
+        )
+
+        # Log results to CSV
+        log_experiment_results(config, test_metrics, config["training"]["output_dir"])
 
         # Print summary
         print("\n" + "=" * 60)

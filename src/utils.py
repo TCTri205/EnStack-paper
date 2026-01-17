@@ -87,12 +87,15 @@ def setup_logging(
     return logger
 
 
-def set_seed(seed: int = 42) -> None:
+def set_seed(seed: int = 42, deterministic: bool = False) -> None:
     """
     Sets random seed for reproducibility across Python, NumPy, and PyTorch.
 
     Args:
         seed (int): Random seed value (default: 42).
+        deterministic (bool): If True, ensures fully deterministic behavior.
+            WARNING: Setting to True can reduce performance by 20-30%.
+            Only use for debugging or strict reproducibility requirements.
     """
     random.seed(seed)
     np.random.seed(seed)
@@ -100,10 +103,19 @@ def set_seed(seed: int = 42) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        # Ensure deterministic behavior (may impact performance)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-    logging.info(f"Random seed set to {seed}")
+
+        if deterministic:
+            # Fully deterministic (slower)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            logging.info(f"Random seed set to {seed} (DETERMINISTIC mode - slower)")
+        else:
+            # Faster but may have minor non-determinism
+            torch.backends.cudnn.deterministic = False
+            torch.backends.cudnn.benchmark = True
+            logging.info(f"Random seed set to {seed} (optimized mode)")
+    else:
+        logging.info(f"Random seed set to {seed}")
 
 
 def ensure_dir(directory: str) -> None:

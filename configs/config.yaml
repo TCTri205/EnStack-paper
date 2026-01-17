@@ -41,3 +41,24 @@ training:
   max_length: 512
   seed: 42
   output_dir: "/content/drive/MyDrive/EnStack_Data/checkpoints"
+  
+  # Advanced Training Options
+  scheduler: "cosine"        # Options: linear, cosine
+  use_amp: True              # Automatic Mixed Precision
+  use_swa: False             # Stochastic Weight Averaging
+  swa_start: 5
+  gradient_accumulation_steps: 1
+  early_stopping_patience: 3
+  early_stopping_metric: "f1"
+  
+  # Data Pipeline Options
+  use_dynamic_padding: True
+  lazy_loading: False
+  cache_tokenization: True
+  
+  # Stacking Options
+  stacking_mode: "logits"     # Options: logits, embedding
+  pooling_mode: "mean"        # Options: cls, mean
+  use_pca: True
+  pca_components: null        # null = 95% variance
+  use_scaling: True

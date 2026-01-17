@@ -33,6 +33,9 @@ class EnStackModel(nn.Module):
         num_labels: int = 5,
         pretrained: bool = True,
         dropout_rate: float = 0.1,
+        label_smoothing: float = 0.0,
+        class_weights: Optional[torch.Tensor] = None,
+        use_gradient_checkpointing: bool = False,
     ) -> None:
         """
         Initialize the EnStackModel.
@@ -42,11 +45,20 @@ class EnStackModel(nn.Module):
             num_labels (int): Number of output labels for classification.
             pretrained (bool): Whether to load pretrained weights.
             dropout_rate (float): Dropout rate for the classifier head.
+            label_smoothing (float): Label smoothing factor (0.0 = no smoothing, 0.1 = 10% smoothing).
+                Helps prevent overfitting and improves generalization.
+            class_weights (Optional[torch.Tensor]): Weights for each class to handle imbalance.
+                Shape: [num_labels]. If None, all classes are weighted equally.
+            use_gradient_checkpointing (bool): Enable gradient checkpointing to save VRAM.
+                Trades computation for memory (slower but uses less VRAM).
+                Recommended for long sequences (>512 tokens) or limited VRAM.
         """
         super(EnStackModel, self).__init__()
 
         self.model_name = model_name
         self.num_labels = num_labels
+        self.label_smoothing = label_smoothing
+        self.class_weights = class_weights
 
         # Load the transformer model for sequence classification
         if pretrained:
@@ -67,6 +79,17 @@ class EnStackModel(nn.Module):
 
         # Store the base model for feature extraction
         self.base_model = self.model.roberta
+
+        # Enable gradient checkpointing if requested
+        if use_gradient_checkpointing:
+            self.model.gradient_checkpointing_enable()
+            logger.info("Gradient checkpointing enabled (saves VRAM, slightly slower)")
+
+        # Log configuration
+        if label_smoothing > 0:
+            logger.info(f"Label smoothing enabled: {label_smoothing}")
+        if class_weights is not None:
+            logger.info(f"Class weighting enabled: {class_weights.tolist()}")
 
     def forward(
         self,
@@ -90,39 +113,81 @@ class EnStackModel(nn.Module):
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            labels=labels,
+            labels=None,  # We'll compute loss manually to support label smoothing & class weights
             return_dict=True,
         )
 
-        result = {"logits": outputs.logits}
+        logits = outputs.logits
+        result = {"logits": logits}
+
         if labels is not None:
-            result["loss"] = outputs.loss
+            # Compute loss with label smoothing and class weights
+            if self.label_smoothing > 0 or self.class_weights is not None:
+                loss_fct = nn.CrossEntropyLoss(
+                    weight=self.class_weights.to(logits.device)
+                    if self.class_weights is not None
+                    else None,
+                    label_smoothing=self.label_smoothing,
+                )
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            else:
+                # Use default model loss
+                outputs_with_loss = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                    return_dict=True,
+                )
+                loss = outputs_with_loss.loss
+
+            result["loss"] = loss
 
         return result
 
     def get_embedding(
-        self, input_ids: torch.Tensor, attention_mask: torch.Tensor
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        pooling: str = "cls",
     ) -> torch.Tensor:
         """
         Extracts feature embeddings from the model for stacking.
 
-        This method returns the [CLS] token embedding from the final hidden state.
-
         Args:
             input_ids (torch.Tensor): Token IDs (shape: [batch_size, seq_length]).
             attention_mask (torch.Tensor): Attention mask (shape: [batch_size, seq_length]).
+            pooling (str): Pooling strategy - 'cls' or 'mean'.
+                - 'cls': Uses [CLS] token embedding (default)
+                - 'mean': Uses mean pooling over all tokens (excluding padding)
 
         Returns:
-            torch.Tensor: CLS token embeddings (shape: [batch_size, hidden_size]).
+            torch.Tensor: Embeddings (shape: [batch_size, hidden_size]).
         """
         outputs = self.base_model(
             input_ids=input_ids, attention_mask=attention_mask, return_dict=True
         )
 
-        # Extract [CLS] token representation (first token)
-        cls_embedding = outputs.last_hidden_state[:, 0, :]
+        if pooling == "mean":
+            # Mean pooling: average all token embeddings, weighted by attention_mask
+            token_embeddings = (
+                outputs.last_hidden_state
+            )  # [batch_size, seq_len, hidden_size]
 
-        return cast(torch.Tensor, cls_embedding)
+            # Expand attention mask to match embedding dimensions
+            input_mask_expanded = (
+                attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+            )
+
+            # Sum all token embeddings, then divide by the number of non-padding tokens
+            sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, dim=1)
+            sum_mask = torch.clamp(input_mask_expanded.sum(dim=1), min=1e-9)
+            mean_embeddings = sum_embeddings / sum_mask
+
+            return cast(torch.Tensor, mean_embeddings)
+        else:
+            # CLS pooling: extract [CLS] token representation (first token)
+            cls_embedding = outputs.last_hidden_state[:, 0, :]
+            return cast(torch.Tensor, cls_embedding)
 
     def get_logits(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
@@ -165,6 +230,61 @@ class EnStackModel(nn.Module):
         instance = cls(model_path, num_labels=num_labels, pretrained=True)
         logger.info(f"Model loaded from {model_path}")
         return instance
+
+    def export_onnx(self, save_path: str, max_length: int = 512) -> None:
+        """
+        Exports the model to ONNX format for optimized inference.
+
+        Args:
+            save_path (str): Path to save the ONNX model.
+            max_length (int): Maximum sequence length for dummy input.
+        """
+        self.model.eval()
+        device = next(self.model.parameters()).device
+
+        # Create dummy input
+        dummy_input_ids = torch.zeros((1, max_length), dtype=torch.long).to(device)
+        dummy_attention_mask = torch.ones((1, max_length), dtype=torch.long).to(device)
+
+        # Export
+        torch.onnx.export(
+            self.model,
+            (dummy_input_ids, dummy_attention_mask),
+            save_path,
+            export_params=True,
+            opset_version=12,
+            do_constant_folding=True,
+            input_names=["input_ids", "attention_mask"],
+            output_names=["logits"],
+            dynamic_axes={
+                "input_ids": {0: "batch_size", 1: "sequence_length"},
+                "attention_mask": {0: "batch_size", 1: "sequence_length"},
+                "logits": {0: "batch_size"},
+            },
+        )
+        logger.info(f"Model exported to ONNX: {save_path}")
+
+    def export_torchscript(self, save_path: str, max_length: int = 512) -> None:
+        """
+        Exports the model to TorchScript format.
+
+        Args:
+            save_path (str): Path to save the TorchScript model.
+            max_length (int): Maximum sequence length for tracing.
+        """
+        self.model.eval()
+        device = next(self.model.parameters()).device
+
+        # Create dummy input
+        dummy_input_ids = torch.zeros((1, max_length), dtype=torch.long).to(device)
+        dummy_attention_mask = torch.ones((1, max_length), dtype=torch.long).to(device)
+
+        # Trace the model
+        traced_model = torch.jit.trace(
+            self.model, (dummy_input_ids, dummy_attention_mask), check_trace=False
+        )
+        traced_model.save(save_path)
+        logger.info(f"Model exported to TorchScript: {save_path}")
 
 
 def create_model(
