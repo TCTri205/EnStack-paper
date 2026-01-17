@@ -151,6 +151,7 @@ class VulnerabilityDataset(Dataset):
         self.cache_tokenization = cache_tokenization
         self.smart_batching = smart_batching
         self.samples: List[Dict[str, torch.Tensor]] = []
+        self._length: int = 0
 
         # Load data
         data_file = Path(data_path)
@@ -371,8 +372,12 @@ class VulnerabilityDataset(Dataset):
 
                 # Parse header to find column indices
                 if not hasattr(self, "_csv_column_indices"):
+                    if self.csv_header is None:
+                        raise ValueError("CSV header is missing")
                     header_reader = csv.reader([self.csv_header])
-                    header = next(header_reader)
+                    from typing import cast
+
+                    header = cast(List[str], next(header_reader))
                     self._csv_column_indices = {col: i for i, col in enumerate(header)}
 
                 # Extract text and label using column names
@@ -426,7 +431,9 @@ class VulnerabilityDataset(Dataset):
             cache_file = self.cache_dir / f"sample_{idx}.pt"
             if cache_file.exists():
                 try:
-                    return torch.load(cache_file)
+                    from typing import cast
+
+                    return cast(Dict[str, torch.Tensor], torch.load(cache_file))
                 except Exception as e:
                     logger.warning(f"Error loading cache for index {idx}: {e}")
 

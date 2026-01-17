@@ -195,9 +195,9 @@ class EnStackTrainer:
                              - epoch: The epoch to resume from (or the last completed one).
                              - step: The step within that epoch to resume from.
         """
-        checkpoint_path = Path(checkpoint_path)
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+        checkpoint_dir = Path(checkpoint_path)
+        if not checkpoint_dir.exists():
+            raise FileNotFoundError(f"Checkpoint not found at {checkpoint_dir}")
 
         # Load model weights
         from transformers import RobertaForSequenceClassification
@@ -205,13 +205,13 @@ class EnStackTrainer:
         # We need to reload the inner model using HF's from_pretrained
         # This ensures we get the weights correctly
         self.model.model = RobertaForSequenceClassification.from_pretrained(
-            checkpoint_path, num_labels=self.model.num_labels
+            checkpoint_dir, num_labels=self.model.num_labels
         )
         self.model.to(self.device)
-        logger.info(f"Loaded model weights from {checkpoint_path}")
+        logger.info(f"Loaded model weights from {checkpoint_dir}")
 
         # Load training state
-        state_path = checkpoint_path / "training_state.pth"
+        state_path = checkpoint_dir / "training_state.pth"
         if state_path.exists():
             state = torch.load(state_path, map_location=self.device)
             self.optimizer.load_state_dict(state["optimizer_state_dict"])
@@ -340,9 +340,13 @@ class EnStackTrainer:
             step_offset = resume_step
             batches_to_train = remaining_batches  # Track actual batches to train
         else:
-            train_iterator = self.train_loader
+            # Explicitly type hint to avoid mypy confusion
+            from typing import Iterator, Union
+
+            train_iter: Union[DataLoader, Iterator] = self.train_loader
+
             progress_bar = tqdm(
-                train_iterator,
+                train_iter,
                 total=total_batches,
                 desc=f"Epoch {epoch} [Train]",
                 leave=False,
@@ -772,9 +776,10 @@ class EnStackTrainer:
 
                 # Update SWA model
                 if use_swa and epoch >= swa_start:
-                    swa_model.update_parameters(self.model)
-                    swa_scheduler.step()
-                    logger.info(f"Epoch {epoch}: Updated SWA parameters")
+                    if swa_model is not None and swa_scheduler is not None:
+                        swa_model.update_parameters(self.model)
+                        swa_scheduler.step()
+                        logger.info(f"Epoch {epoch}: Updated SWA parameters")
 
                 # Save best model
                 if save_best and val_metrics["f1"] > self.best_val_f1:
@@ -837,13 +842,14 @@ class EnStackTrainer:
 
         # Finalize SWA
         if use_swa:
-            logger.info("Finalizing SWA: Updating BN and copying weights to model")
-            from torch.optim.swa_utils import update_bn
+            if swa_model is not None:
+                logger.info("Finalizing SWA: Updating BN and copying weights to model")
+                from torch.optim.swa_utils import update_bn
 
-            update_bn(self.train_loader, swa_model, device=self.device)
-            # Copy SWA weights back to main model
-            self.model.load_state_dict(swa_model.module.state_dict())
-            self.save_checkpoint("swa_model", epoch=num_epochs, step=0)
+                update_bn(self.train_loader, swa_model, device=self.device)
+                # Copy SWA weights back to main model
+                self.model.load_state_dict(swa_model.module.state_dict())
+                self.save_checkpoint("swa_model", epoch=num_epochs, step=0)
 
         if self.writer:
             self.writer.close()
@@ -964,7 +970,7 @@ class EnStackTrainer:
                 logger.info(f"Loading cached features from {cache_path}")
                 features = np.load(cache_path)
                 logger.info(f"Loaded cached features with shape: {features.shape}")
-                return features
+                return cast(np.ndarray, features)
 
         # Extract features
         self.model.eval()
@@ -972,7 +978,10 @@ class EnStackTrainer:
         # OPTIMIZATION: Zero-Copy Memory Management
         # Pre-allocate numpy array to avoid list append overhead and RAM spikes
         # First, determine feature dimension from the model config or a dummy pass
-        num_samples = len(loader.dataset)
+        from typing import Sized
+
+        dataset_sized = cast(Sized, loader.dataset)
+        num_samples = len(dataset_sized)
         feature_dim = (
             self.model.num_labels if mode == "logits" else 768
         )  # Approximate default
@@ -1035,10 +1044,14 @@ class EnStackTrainer:
                     start_idx = end_idx
 
         # Trim if dataset length was overestimated (e.g. distributed sampling)
-        if start_idx < num_samples:
+        if start_idx < num_samples and features_array is not None:
             features_array = features_array[:start_idx]
 
         features = features_array
+        # Handle the case where features_array might be None (empty loader)
+        if features is None:
+            features = np.array([], dtype=np.float32)
+
         logger.info(
             f"Extracted {mode} (pooling={pooling if mode == 'embedding' else 'N/A'}) "
             f"with shape: {features.shape}"
