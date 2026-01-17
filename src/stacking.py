@@ -8,7 +8,7 @@ on features extracted from base models.
 import logging
 import pickle
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier

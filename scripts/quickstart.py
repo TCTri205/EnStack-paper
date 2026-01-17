@@ -5,7 +5,6 @@ This script demonstrates a minimal example of using EnStack for vulnerability de
 """
 
 import logging
-from pathlib import Path
 
 from src.dataset import create_dataloaders
 from src.models import create_model

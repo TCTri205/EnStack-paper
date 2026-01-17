@@ -8,13 +8,12 @@ This script provides multiple options to prepare vulnerability detection data:
 """
 
 import logging
-import os
-import pickle
-import pandas as pd
-import numpy as np
-import h5py
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict
+
+import h5py
+import numpy as np
+import pandas as pd
 
 # Setup logging
 logging.basicConfig(
@@ -192,7 +191,7 @@ def process_draper_files(data_dir: str, output_dir: str, match_paper: bool = Fal
                 logger.info(f"Keys in HDF5: {keys}")
 
                 if "functionSource" not in keys:
-                    logger.error(f"Invalid HDF5 format. Missing 'functionSource'.")
+                    logger.error("Invalid HDF5 format. Missing 'functionSource'.")
                     continue
 
                 # Read CWE columns
@@ -210,15 +209,15 @@ def process_draper_files(data_dir: str, output_dir: str, match_paper: bool = Fal
                 df_labels["target"] = -1
 
                 if "CWE-other" in cwe_cols:
-                    df_labels.loc[df_labels["CWE-other"] == True, "target"] = 4
+                    df_labels.loc[df_labels["CWE-other"] is True, "target"] = 4
                 if "CWE-476" in cwe_cols:
-                    df_labels.loc[df_labels["CWE-476"] == True, "target"] = 3
+                    df_labels.loc[df_labels["CWE-476"] is True, "target"] = 3
                 if "CWE-469" in cwe_cols:
-                    df_labels.loc[df_labels["CWE-469"] == True, "target"] = 2
+                    df_labels.loc[df_labels["CWE-469"] is True, "target"] = 2
                 if "CWE-120" in cwe_cols:
-                    df_labels.loc[df_labels["CWE-120"] == True, "target"] = 1
+                    df_labels.loc[df_labels["CWE-120"] is True, "target"] = 1
                 if "CWE-119" in cwe_cols:
-                    df_labels.loc[df_labels["CWE-119"] == True, "target"] = 0
+                    df_labels.loc[df_labels["CWE-119"] is True, "target"] = 0
 
                 # Filter valid samples
                 valid_indices = df_labels[df_labels["target"] != -1].index
@@ -229,7 +228,7 @@ def process_draper_files(data_dir: str, output_dir: str, match_paper: bool = Fal
 
                 if match_paper and split in PAPER_COUNTS:
                     target_counts = PAPER_COUNTS[split]
-                    logger.info(f"Downsampling to match paper distribution...")
+                    logger.info("Downsampling to match paper distribution...")
 
                     for label, count in target_counts.items():
                         label_indices = df_labels[
@@ -301,7 +300,7 @@ def print_manual_upload_guide(output_dir: str):
     logger.info(f"   - {output_dir}/val_processed.pkl")
     logger.info(f"   - {output_dir}/test_processed.pkl")
     logger.info("\n4. Upload these files to your Google Drive:")
-    logger.info(f"   /content/drive/MyDrive/EnStack_Data/")
+    logger.info("   /content/drive/MyDrive/EnStack_Data/")
     logger.info("\n" + "=" * 60 + "\n")
 
 
