@@ -93,6 +93,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--save-steps",
+        type=int,
+        default=500,
+        help="Save checkpoint every X steps (default: 500)",
+    )
+
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume training from last checkpoint if available",
@@ -132,7 +139,12 @@ def load_labels_from_file(data_path: str) -> np.ndarray:
 
 
 def train_base_models(
-    config: Dict, model_names: List[str], num_epochs: int, device, resume: bool = False
+    config: Dict,
+    model_names: List[str],
+    num_epochs: int,
+    device,
+    resume: bool = False,
+    save_steps: int = 500,
 ) -> Dict:
     """
     Trains all base models.
@@ -143,6 +155,7 @@ def train_base_models(
         num_epochs (int): Number of training epochs.
         device: Device to use for training.
         resume (bool): Whether to resume from checkpoint.
+        save_steps (int): Steps between checkpoints.
 
     Returns:
         Dict: Dictionary of trained trainers.
@@ -192,8 +205,11 @@ def train_base_models(
 
         # Train
         if num_epochs > 0:
-            history = trainer.train(
-                num_epochs=num_epochs, save_best=True, resume_from=resume_path
+            trainer.train(
+                num_epochs=num_epochs,
+                save_best=True,
+                resume_from=resume_path,
+                save_steps=save_steps,
             )
         elif resume_path:
             logger.info(f"Loading weights from {resume_path} (epochs=0)...")
@@ -301,7 +317,12 @@ def main():
     # Step 1: Train base models
     if not args.skip_training:
         trainers = train_base_models(
-            config, model_names, num_epochs, device, resume=args.resume
+            config,
+            model_names,
+            num_epochs,
+            device,
+            resume=args.resume,
+            save_steps=args.save_steps,
         )
     else:
         logger.info("Skipping base model training (using existing checkpoints)")

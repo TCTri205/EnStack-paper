@@ -7,7 +7,7 @@ and feature extraction from transformer-based models.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Any, cast
+from typing import Dict, List, Optional, cast
 
 import numpy as np
 import torch
@@ -78,7 +78,7 @@ class EnStackTrainer:
         self.best_val_f1 = 0.0
         self.best_val_acc = 0.0
 
-    def load_checkpoint(self, checkpoint_path: str) -> int:
+    def load_checkpoint(self, checkpoint_path: str) -> tuple[int, int]:
         """
         Loads the model and training state from a checkpoint.
 
@@ -86,7 +86,9 @@ class EnStackTrainer:
             checkpoint_path (str): Path to the checkpoint directory.
 
         Returns:
-            int: The epoch number to resume from.
+            tuple[int, int]: A tuple containing (epoch, step).
+                             - epoch: The epoch to resume from (or the last completed one).
+                             - step: The step within that epoch to resume from.
         """
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():
@@ -115,10 +117,11 @@ class EnStackTrainer:
                 self.scheduler.load_state_dict(state["scheduler_state_dict"])
 
             epoch = state.get("epoch", 0)
-            logger.info(f"Loaded training state (Epoch {epoch})")
-            return epoch
+            step = state.get("step", 0)
+            logger.info(f"Loaded training state (Epoch {epoch}, Step {step})")
+            return epoch, step
 
-        return 0
+        return 0, 0
 
     def _get_linear_schedule_with_warmup(
         self, num_training_steps: int, num_warmup_steps: int = 0
@@ -145,12 +148,16 @@ class EnStackTrainer:
 
         return LambdaLR(self.optimizer, lr_lambda)
 
-    def train_epoch(self, epoch: int) -> Dict[str, float]:
+    def train_epoch(
+        self, epoch: int, resume_step: int = 0, save_steps: int = 500
+    ) -> Dict[str, float]:
         """
         Trains the model for one epoch.
 
         Args:
             epoch (int): Current epoch number.
+            resume_step (int): Step to resume from within the epoch.
+            save_steps (int): Save checkpoint every X steps.
 
         Returns:
             Dict[str, float]: Dictionary containing training metrics.
@@ -163,11 +170,22 @@ class EnStackTrainer:
         all_preds: List[int] = []
         all_labels: List[int] = []
 
+        # Adjust total batches for progress bar if resuming
+        total_batches = len(self.train_loader)
+
         progress_bar = tqdm(
-            self.train_loader, desc=f"Epoch {epoch} [Train]", leave=False
+            enumerate(self.train_loader),
+            total=total_batches,
+            desc=f"Epoch {epoch} [Train]",
+            leave=False,
+            initial=resume_step,
         )
 
-        for batch in progress_bar:
+        for step, batch in progress_bar:
+            # Skip steps if resuming
+            if step < resume_step:
+                continue
+
             # Move batch to device
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
@@ -197,8 +215,24 @@ class EnStackTrainer:
             # Update progress bar
             progress_bar.set_postfix({"loss": loss.item()})
 
-        # Calculate metrics
-        avg_loss = total_loss / len(self.train_loader)
+            # Step-based Checkpointing
+            if (step + 1) % save_steps == 0:
+                self.save_checkpoint("last_checkpoint", epoch=epoch, step=(step + 1))
+                # We can also save a backup like 'checkpoint-epoch-X-step-Y' if desired,
+                # but 'last_checkpoint' is enough for crash recovery.
+
+        # Calculate metrics (accounting for skipped steps if any, though average is per-batch)
+        # Note: If we resumed, len(all_labels) < len(dataset). This gives metrics for the *trained part* of the epoch.
+        if len(all_labels) == 0:
+            return {"loss": 0.0, "accuracy": 0.0, "f1": 0.0}
+
+        avg_loss = (
+            total_loss / len(all_labels) if len(all_labels) > 0 else 0.0
+        )  # Approximation using batches
+        # Better: total_loss / (total_batches - resume_step)
+        steps_trained = total_batches - resume_step
+        avg_loss = total_loss / steps_trained if steps_trained > 0 else 0.0
+
         accuracy = accuracy_score(all_labels, all_preds)
         f1 = f1_score(all_labels, all_preds, average="weighted", zero_division=0)
 
@@ -279,7 +313,11 @@ class EnStackTrainer:
         return metrics
 
     def train(
-        self, num_epochs: int, save_best: bool = True, resume_from: Optional[str] = None
+        self,
+        num_epochs: int,
+        save_best: bool = True,
+        resume_from: Optional[str] = None,
+        save_steps: int = 500,
     ) -> Dict[str, List[float]]:
         """
         Trains the model for multiple epochs.
@@ -288,6 +326,7 @@ class EnStackTrainer:
             num_epochs (int): Number of epochs to train.
             save_best (bool): Whether to save the best model based on validation F1.
             resume_from (Optional[str]): Path to checkpoint directory to resume from.
+            save_steps (int): Save checkpoint every X steps.
 
         Returns:
             Dict[str, List[float]]: Dictionary containing training history.
@@ -303,21 +342,41 @@ class EnStackTrainer:
         )
 
         start_epoch = 1
+        start_step = 0
 
         # Resume if requested
         if resume_from:
             logger.info(f"Resuming training from {resume_from}...")
-            loaded_epoch = self.load_checkpoint(resume_from)
-            if loaded_epoch > 0:
-                start_epoch = loaded_epoch + 1
-                logger.info(f"Resuming from epoch {start_epoch}")
+            loaded_epoch, loaded_step = self.load_checkpoint(resume_from)
 
-                # Adjust scheduler to skip steps
-                # Note: This is an approximation. Ideally we save scheduler state.
-                # We added scheduler loading in load_checkpoint, so if it exists, it's handled.
-                if self.scheduler and start_epoch > 1:
-                    # If we didn't load scheduler state (old checkpoint), step it forward
-                    steps_to_skip = (start_epoch - 1) * len(self.train_loader)
+            # Determine where to start
+            if loaded_step == 0:
+                # Previous checkpoint was at end of epoch (old format or finished epoch)
+                if loaded_epoch > 0:
+                    start_epoch = loaded_epoch + 1
+                    start_step = 0
+                    logger.info(f"Resuming from start of epoch {start_epoch}")
+            else:
+                # Previous checkpoint was mid-epoch
+                start_epoch = loaded_epoch
+                start_step = loaded_step
+                logger.info(f"Resuming from epoch {start_epoch}, step {start_step}")
+
+            # Adjust scheduler to skip steps
+            # Total steps already taken = (completed_epochs * steps_per_epoch) + steps_in_current_epoch
+            # completed_epochs = start_epoch - 1
+            if self.scheduler:
+                steps_per_epoch = len(self.train_loader)
+                steps_to_skip = ((start_epoch - 1) * steps_per_epoch) + start_step
+
+                if steps_to_skip > 0:
+                    logger.info(
+                        f"Fast-forwarding scheduler by {steps_to_skip} steps..."
+                    )
+                    # Note: We can just set _step_count if accessing private member is safe,
+                    # but calling step() is safer for compatibility.
+                    # Since this might be large, tqdm it if very large?
+                    # Usually fast enough unless millions.
                     for _ in range(steps_to_skip):
                         self.scheduler.step()
 
@@ -333,8 +392,13 @@ class EnStackTrainer:
         logger.info(f"Starting training for {num_epochs} epochs (from {start_epoch})")
 
         for epoch in range(start_epoch, num_epochs + 1):
+            # If this is the first epoch of the loop, use start_step. Otherwise 0.
+            current_resume_step = start_step if epoch == start_epoch else 0
+
             # Train
-            train_metrics = self.train_epoch(epoch)
+            train_metrics = self.train_epoch(
+                epoch, resume_step=current_resume_step, save_steps=save_steps
+            )
             history["train_loss"].append(train_metrics["loss"])
             history["train_acc"].append(train_metrics["accuracy"])
             history["train_f1"].append(train_metrics["f1"])
@@ -350,17 +414,22 @@ class EnStackTrainer:
                 if save_best and val_metrics["f1"] > self.best_val_f1:
                     self.best_val_f1 = val_metrics["f1"]
                     self.best_val_acc = val_metrics["accuracy"]
-                    self.save_checkpoint(f"best_model_epoch_{epoch}", epoch=epoch)
+                    self.save_checkpoint(
+                        f"best_model_epoch_{epoch}", epoch=epoch, step=0
+                    )  # Best model is always at end of epoch
                     logger.info(f"New best model saved (F1: {self.best_val_f1:.4f})")
 
-            # ALWAYS save last checkpoint for resuming
-            self.save_checkpoint("last_checkpoint", epoch=epoch)
+            # ALWAYS save last checkpoint for resuming (reset step to 0 as epoch finished)
+            self.save_checkpoint("last_checkpoint", epoch=epoch, step=0)
+
+            # Reset start_step for next epochs
+            start_step = 0
 
         logger.info("Training completed")
         return history
 
     def save_checkpoint(
-        self, checkpoint_name: str = "checkpoint", epoch: int = 0
+        self, checkpoint_name: str = "checkpoint", epoch: int = 0, step: int = 0
     ) -> None:
         """
         Saves the model checkpoint.
@@ -368,6 +437,7 @@ class EnStackTrainer:
         Args:
             checkpoint_name (str): Name of the checkpoint.
             epoch (int): Current epoch number.
+            step (int): Current step within the epoch.
         """
         save_path = self.output_dir / checkpoint_name
         save_path.mkdir(parents=True, exist_ok=True)
@@ -380,6 +450,7 @@ class EnStackTrainer:
             "best_val_f1": self.best_val_f1,
             "best_val_acc": self.best_val_acc,
             "epoch": epoch,
+            "step": step,
         }
 
         if self.scheduler is not None:
