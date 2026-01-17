@@ -51,17 +51,48 @@ else
     echo ""
 fi
 
-# Run processing
-echo "=============================================================="
-echo "  ⚙️  Processing Draper VDISC Data"
-echo "=============================================================="
-echo ""
+# Check if we need to clean up old "Dummy" data
+# Logic: If processed files exist, BUT raw HDF5 files are missing, 
+# it implies the previous run was using Dummy/Synthetic data.
+PROCESSED_EXIST=$(ls /content/drive/MyDrive/EnStack_Data/*_processed.pkl 2>/dev/null | wc -l)
+RAW_EXIST=$(find "$DRAPER_DIR" -name "*.hdf5" 2>/dev/null | wc -l)
 
-python scripts/prepare_data.py \
-    --mode draper \
-    --draper_dir "$DRAPER_DIR" \
-    --output_dir "/content/drive/MyDrive/EnStack_Data" \
-    --match_paper
+if [ "$PROCESSED_EXIST" -ge 3 ] && [ "$RAW_EXIST" -eq 0 ]; then
+    echo "⚠️  DETECTED POTENTIAL DUMMY DATA!"
+    echo "   Found processed files but NO raw Draper files."
+    echo "   This suggests previous runs used synthetic data."
+    echo ""
+    echo "🧹 AUTOMATIC CLEANUP ACTIVATED:"
+    echo "   - Deleting old processed files (*.pkl)..."
+    rm /content/drive/MyDrive/EnStack_Data/*_processed.pkl
+    
+    echo "   - Deleting old checkpoints (trained on dummy data)..."
+    rm -rf /content/drive/MyDrive/EnStack_Data/checkpoints
+    
+    echo "✅ Cleanup complete. Proceeding with fresh Draper setup..."
+    echo ""
+    PROCESSED_COUNT=0
+else
+    # Check if processed files already exist to skip processing
+    PROCESSED_COUNT=$(ls /content/drive/MyDrive/EnStack_Data/*_processed.pkl 2>/dev/null | wc -l)
+fi
+
+if [ "$PROCESSED_COUNT" -eq 3 ] && [ "$RAW_EXIST" -gt 0 ]; then
+    echo "✅ Processed data files found! Skipping processing step."
+    echo "   (Remove files in /content/drive/MyDrive/EnStack_Data/ if you want to re-process)"
+else
+    # Run processing
+    echo "=============================================================="
+    echo "  ⚙️  Processing Draper VDISC Data"
+    echo "=============================================================="
+    echo ""
+
+    python scripts/prepare_data.py \
+        --mode draper \
+        --draper_dir "$DRAPER_DIR" \
+        --output_dir "/content/drive/MyDrive/EnStack_Data" \
+        --match_paper
+fi
 
 # Check results
 echo ""

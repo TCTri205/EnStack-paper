@@ -10,3 +10,5 @@ black
 ruff
 mypy
 datasets>=2.0.0
+h5py
+tables
