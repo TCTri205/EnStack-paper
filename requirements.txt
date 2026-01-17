@@ -9,3 +9,4 @@ pytest
 black
 ruff
 mypy
+datasets>=2.0.0
