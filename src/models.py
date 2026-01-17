@@ -36,6 +36,8 @@ class EnStackModel(nn.Module):
         label_smoothing: float = 0.0,
         class_weights: Optional[torch.Tensor] = None,
         use_gradient_checkpointing: bool = False,
+        use_torch_compile: bool = False,
+        torch_compile_mode: str = "default",
     ) -> None:
         """
         Initialize the EnStackModel.
@@ -52,6 +54,10 @@ class EnStackModel(nn.Module):
             use_gradient_checkpointing (bool): Enable gradient checkpointing to save VRAM.
                 Trades computation for memory (slower but uses less VRAM).
                 Recommended for long sequences (>512 tokens) or limited VRAM.
+            use_torch_compile (bool): Enable torch.compile() for graph optimization.
+                OPTIMIZATION: Provides 10-20% speedup on modern GPUs (PyTorch 2.0+).
+                Modes: 'default' (balanced), 'reduce-overhead' (faster), 'max-autotune' (slowest compile, fastest run).
+            torch_compile_mode (str): Compilation mode for torch.compile.
         """
         super(EnStackModel, self).__init__()
 
@@ -84,6 +90,22 @@ class EnStackModel(nn.Module):
         if use_gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
             logger.info("Gradient checkpointing enabled (saves VRAM, slightly slower)")
+
+        # OPTIMIZATION: Enable torch.compile for graph optimization (PyTorch 2.0+)
+        if use_torch_compile:
+            if hasattr(torch, "compile"):
+                logger.info(
+                    f"Compiling model with torch.compile (mode={torch_compile_mode})..."
+                )
+                self.model = torch.compile(self.model, mode=torch_compile_mode)
+                logger.info(
+                    "✅ torch.compile enabled - expect 10-20% speedup on modern GPUs"
+                )
+            else:
+                logger.warning(
+                    "⚠️ torch.compile not available (requires PyTorch 2.0+). "
+                    "Upgrade PyTorch for performance boost: pip install --upgrade torch"
+                )
 
         # Log configuration
         if label_smoothing > 0:
@@ -124,9 +146,11 @@ class EnStackModel(nn.Module):
             # Compute loss with label smoothing and class weights
             if self.label_smoothing > 0 or self.class_weights is not None:
                 loss_fct = nn.CrossEntropyLoss(
-                    weight=self.class_weights.to(logits.device)
-                    if self.class_weights is not None
-                    else None,
+                    weight=(
+                        self.class_weights.to(logits.device)
+                        if self.class_weights is not None
+                        else None
+                    ),
                     label_smoothing=self.label_smoothing,
                 )
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
@@ -318,7 +342,16 @@ def create_model(
 
     # Create model
     model = EnStackModel(
-        model_name=hf_model_name, num_labels=num_labels, pretrained=pretrained
+        model_name=hf_model_name,
+        num_labels=num_labels,
+        pretrained=pretrained,
+        dropout_rate=config["model"].get("dropout_rate", 0.1),
+        label_smoothing=config["model"].get("label_smoothing", 0.0),
+        use_gradient_checkpointing=config["model"].get(
+            "use_gradient_checkpointing", False
+        ),
+        use_torch_compile=config["model"].get("use_torch_compile", False),
+        torch_compile_mode=config["model"].get("torch_compile_mode", "default"),
     )
 
     # Create tokenizer

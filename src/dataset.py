@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
 logger = logging.getLogger("EnStack")
@@ -145,6 +146,7 @@ class VulnerabilityDataset(Dataset):
         self.lazy_loading = lazy_loading
         self.data_path = data_path
         self.cache_tokenization = cache_tokenization
+        self.samples: List[Dict[str, torch.Tensor]] = []
 
         # Load data
         data_file = Path(data_path)
@@ -153,7 +155,7 @@ class VulnerabilityDataset(Dataset):
 
         self.data_file = data_file
 
-        # Setup tokenization cache directory
+        # Setup tokenization cache directory (Only for lazy loading / disk cache)
         if cache_tokenization:
             model_slug = tokenizer.__class__.__name__.lower().replace("tokenizer", "")
             self.cache_dir = (
@@ -175,14 +177,51 @@ class VulnerabilityDataset(Dataset):
             if label_column not in self.data.columns:
                 raise ValueError(f"Label column '{label_column}' not found in data")
 
+            # OPTIMIZATION: Pre-tokenize all data into RAM if not lazy loading
+            # This avoids repeated tokenization and disk I/O during training
+            self._pre_tokenize_data()
+
         logger.info(
             f"Loaded {len(self)} samples from {data_path} "
             f"(max_length={max_length}, lazy_loading={lazy_loading}, cache={cache_tokenization})"
         )
 
+    def _pre_tokenize_data(self) -> None:
+        """
+        Pre-tokenizes the entire dataset and stores it in memory.
+        This drastically speeds up training by removing tokenizer overhead and disk I/O.
+        """
+        logger.info("Pre-tokenizing dataset into memory...")
+
+        # Iterate over dataframe and tokenize
+        for idx in tqdm(range(len(self.data)), desc="Tokenizing"):
+            row = self.data.iloc[idx]
+            text = str(row[self.text_column])
+            label = int(row[self.label_column])
+
+            # Tokenize
+            encoding = self.tokenizer(
+                text,
+                max_length=self.max_length,
+                padding=False,
+                truncation=True,
+                return_tensors="pt",
+            )
+
+            sample = {
+                "input_ids": encoding["input_ids"].squeeze(0),
+                "attention_mask": encoding["attention_mask"].squeeze(0),
+                "labels": torch.tensor(label, dtype=torch.long),
+            }
+            self.samples.append(sample)
+
+        logger.info(f"Successfully pre-tokenized {len(self.samples)} samples in RAM")
+
     def _initialize_lazy_loading(self) -> None:
         """
         Initialize lazy loading by reading only the dataset length.
+
+        OPTIMIZATION: For CSV, builds an offset map for O(1) random access.
         """
         suffix = self.data_file.suffix.lower()
 
@@ -194,10 +233,29 @@ class VulnerabilityDataset(Dataset):
             self._length = self.parquet_file.metadata.num_rows
             logger.info(f"Initialized lazy loading with Parquet ({self._length} rows)")
         elif suffix == ".csv":
-            # For CSV, we need to count lines (slower)
-            with open(self.data_file, "r", encoding="utf-8") as f:
-                self._length = sum(1 for _ in f) - 1  # Subtract header
-            logger.info(f"Initialized lazy loading with CSV ({self._length} rows)")
+            # OPTIMIZATION: Build offset map for O(1) random access
+            logger.info("Building CSV offset map for fast random access...")
+            self.csv_offsets = []
+            self.csv_header = None
+
+            with open(self.data_file, "rb") as f:
+                # Read header
+                header_line = f.readline()
+                self.csv_header = header_line.decode("utf-8").strip()
+
+                # Build offset map: store file position of each row
+                while True:
+                    offset = f.tell()
+                    line = f.readline()
+                    if not line:
+                        break
+                    self.csv_offsets.append(offset)
+
+            self._length = len(self.csv_offsets)
+            logger.info(
+                f"Initialized lazy loading with CSV ({self._length} rows, "
+                f"offset map built for O(1) access)"
+            )
         else:
             # For pickle, fall back to eager loading
             logger.warning(
@@ -257,6 +315,8 @@ class VulnerabilityDataset(Dataset):
         """
         Load a single row from disk (for lazy loading).
 
+        OPTIMIZATION: Uses offset map for O(1) CSV access instead of O(N).
+
         Args:
             idx (int): Row index.
 
@@ -279,21 +339,35 @@ class VulnerabilityDataset(Dataset):
             label = int(row[self.label_column])
             return text, label
         elif suffix == ".csv":
-            # CSV lazy loading is inherently slow.
-            # Optimization: Use a shared file handle or buffer if needed,
-            # but for now, we use a slightly better pandas approach.
-            # WARNING: This is still O(N) in worst case.
-            df = pd.read_csv(self.data_file, skiprows=idx, nrows=1, header=None)
-            if len(df) == 0:
+            # OPTIMIZATION: Use offset map for O(1) random access
+            import csv
+
+            if not hasattr(self, "csv_offsets") or idx >= len(self.csv_offsets):
                 raise IndexError(f"Index {idx} out of range")
-            # header=None means columns are 0, 1...
-            # We need to find the correct column index
-            # This is why Parquet is highly recommended.
-            text = str(
-                df.iloc[0][0]
-            )  # Assuming text is first column for simplicity in this fallback
-            label = int(df.iloc[0][1])
-            return text, label
+
+            with open(self.data_file, "r", encoding="utf-8") as f:
+                # Seek directly to the row position (O(1) operation)
+                f.seek(self.csv_offsets[idx])
+                line = f.readline().strip()
+
+                # Parse the CSV line
+                reader = csv.reader([line])
+                row = next(reader)
+
+                # Parse header to find column indices
+                if not hasattr(self, "_csv_column_indices"):
+                    header_reader = csv.reader([self.csv_header])
+                    header = next(header_reader)
+                    self._csv_column_indices = {col: i for i, col in enumerate(header)}
+
+                # Extract text and label using column names
+                text_idx = self._csv_column_indices.get(self.text_column, 0)
+                label_idx = self._csv_column_indices.get(self.label_column, 1)
+
+                text = str(row[text_idx])
+                label = int(row[label_idx])
+
+                return text, label
         else:
             raise ValueError(
                 f"Lazy loading not supported for {suffix}. Use Parquet for best performance."
@@ -327,7 +401,12 @@ class VulnerabilityDataset(Dataset):
         Note:
             No padding is applied here. Use DataCollatorWithPadding for dynamic padding.
         """
-        # Check cache first if enabled
+        # OPTIMIZATION: Return from RAM cache if available
+        if not self.lazy_loading and idx < len(self.samples):
+            return self.samples[idx]
+
+        # Fallback for lazy loading (or if cache failed)
+        # Check disk cache first if enabled
         if self.cache_tokenization:
             cache_file = self.cache_dir / f"sample_{idx}.pt"
             if cache_file.exists():
@@ -340,7 +419,7 @@ class VulnerabilityDataset(Dataset):
             # Load single row from disk
             text, label = self._load_single_row(idx)
         else:
-            # Load from in-memory DataFrame
+            # Load from in-memory DataFrame (should be covered by self.samples, but safety net)
             row = self.data.iloc[idx]
             text = str(row[self.text_column])
             label = int(row[self.label_column])
@@ -360,7 +439,7 @@ class VulnerabilityDataset(Dataset):
             "labels": torch.tensor(label, dtype=torch.long),
         }
 
-        # Save to cache if enabled
+        # Save to disk cache if enabled
         if self.cache_tokenization:
             try:
                 torch.save(sample, self.cache_dir / f"sample_{idx}.pt")
@@ -502,6 +581,159 @@ def create_dataloaders(
         logger.info(
             f"Created test DataLoader with {len(test_dataset)} samples "
             f"(dynamic_padding={use_dynamic_padding}, lazy_loading={lazy_loading}, cache={cache_tokenization})"
+        )
+
+    return train_loader, val_loader, test_loader
+
+
+def create_dataloaders_from_hf_dataset(
+    config: Dict,
+    tokenizer: PreTrainedTokenizer,
+    dataset_name_or_path: Optional[str] = None,
+    train_split: str = "train",
+    val_split: str = "validation",
+    test_split: str = "test",
+    text_column: str = "func",
+    label_column: str = "target",
+    use_dynamic_padding: bool = True,
+) -> Tuple[Optional[DataLoader], Optional[DataLoader], Optional[DataLoader]]:
+    """
+    Creates DataLoader instances using HuggingFace datasets library (memory-mapped).
+
+    OPTIMIZATION: Uses Apache Arrow memory mapping for zero-copy data access.
+    This is faster and more memory-efficient than custom CSV/Parquet loading.
+
+    Args:
+        config (Dict): Configuration dictionary containing training parameters.
+        tokenizer (PreTrainedTokenizer): Tokenizer to use for all datasets.
+        dataset_name_or_path (Optional[str]): HF dataset name or local path.
+        train_split (str): Name of training split.
+        val_split (str): Name of validation split.
+        test_split (str): Name of test split.
+        text_column (str): Column name containing source code.
+        label_column (str): Column name containing labels.
+        use_dynamic_padding (bool): Whether to use dynamic padding.
+
+    Returns:
+        Tuple[Optional[DataLoader], Optional[DataLoader], Optional[DataLoader]]:
+            Train, validation, and test DataLoaders.
+    """
+    try:
+        from datasets import load_dataset, load_from_disk
+    except ImportError as e:
+        raise ImportError(
+            "HuggingFace datasets library not installed. "
+            "Install with: pip install datasets"
+        ) from e
+
+    batch_size = config["training"]["batch_size"]
+    max_length = config["training"]["max_length"]
+
+    # Load dataset
+    if dataset_name_or_path is None:
+        raise ValueError("dataset_name_or_path must be provided")
+
+    # Check if it's a local path or HF Hub dataset
+    from pathlib import Path
+
+    if Path(dataset_name_or_path).exists():
+        logger.info(f"Loading dataset from disk: {dataset_name_or_path}")
+        dataset = load_from_disk(dataset_name_or_path)
+    else:
+        logger.info(f"Loading dataset from HuggingFace Hub: {dataset_name_or_path}")
+        dataset = load_dataset(dataset_name_or_path)
+
+    # Tokenization function
+    def tokenize_function(examples):
+        encodings = tokenizer(
+            examples[text_column],
+            max_length=max_length,
+            padding=False,  # Dynamic padding will be done by collator
+            truncation=True,
+        )
+        encodings["labels"] = examples[label_column]
+        return encodings
+
+    # Apply tokenization with multiprocessing
+    logger.info("Tokenizing dataset with multiprocessing...")
+    tokenized_dataset = dataset.map(
+        tokenize_function,
+        batched=True,
+        num_proc=4,  # Use 4 CPU cores for tokenization
+        remove_columns=dataset[train_split].column_names,
+        desc="Tokenizing",
+    )
+
+    # Set format to PyTorch tensors
+    tokenized_dataset.set_format(
+        type="torch", columns=["input_ids", "attention_mask", "labels"]
+    )
+
+    # Create data collator
+    collate_fn = DataCollatorWithPadding(tokenizer) if use_dynamic_padding else None
+
+    # Optimize DataLoader settings
+    import os
+    import platform
+
+    is_windows = platform.system() == "Windows"
+    pin_memory = torch.cuda.is_available()
+
+    if is_windows:
+        num_workers = 0
+        persistent_workers = False
+    else:
+        num_workers = min(os.cpu_count() or 4, 4)
+        persistent_workers = True
+
+    # Create DataLoaders
+    train_loader = None
+    val_loader = None
+    test_loader = None
+
+    if train_split in tokenized_dataset:
+        train_loader = DataLoader(
+            tokenized_dataset[train_split],
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            prefetch_factor=2 if num_workers > 0 else None,
+        )
+        logger.info(
+            f"Created train DataLoader with {len(tokenized_dataset[train_split])} samples"
+        )
+
+    if val_split in tokenized_dataset:
+        val_loader = DataLoader(
+            tokenized_dataset[val_split],
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            prefetch_factor=2 if num_workers > 0 else None,
+        )
+        logger.info(
+            f"Created validation DataLoader with {len(tokenized_dataset[val_split])} samples"
+        )
+
+    if test_split in tokenized_dataset:
+        test_loader = DataLoader(
+            tokenized_dataset[test_split],
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+            prefetch_factor=2 if num_workers > 0 else None,
+        )
+        logger.info(
+            f"Created test DataLoader with {len(tokenized_dataset[test_split])} samples"
         )
 
     return train_loader, val_loader, test_loader

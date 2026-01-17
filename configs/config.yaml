@@ -16,6 +16,15 @@ model:
     unixcoder: "microsoft/unixcoder-base"
   meta_classifier: "svm" # Options: lr, svm, rf, xgboost
   num_labels: 5
+  
+  # Model Optimization Options
+  use_gradient_checkpointing: False # Set to True if OOM occurs
+  dropout_rate: 0.1
+  label_smoothing: 0.0
+  
+  # NEW: Graph Compilation (PyTorch 2.0+ only, 10-20% speedup on modern GPUs)
+  use_torch_compile: false  # Set to true for faster training on NVIDIA A100/H100/RTX 4090
+  torch_compile_mode: "default"  # Options: "default", "reduce-overhead", "max-autotune"
 
   # Hyperparameters from Table I and Table III of the paper
   meta_classifier_params:
@@ -35,7 +44,7 @@ model:
       eval_metric: "mlogloss"
 
 training:
-  batch_size: 16
+  batch_size: 32
   epochs: 10
   learning_rate: 2.0e-5
   max_length: 512
@@ -50,6 +59,7 @@ training:
   gradient_accumulation_steps: 1
   early_stopping_patience: 3
   early_stopping_metric: "f1"
+  logging_steps: 50
   
   # Checkpoint Options
   save_steps: 500            # Save mid-epoch checkpoint every N steps (0 = disable)
@@ -59,7 +69,7 @@ training:
   # Data Pipeline Options
   use_dynamic_padding: True
   lazy_loading: False
-  cache_tokenization: True
+  cache_tokenization: False
   
   # Stacking Options
   stacking_mode: "logits"     # Options: logits, embedding

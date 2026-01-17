@@ -286,6 +286,7 @@ def train_base_models(
                 "early_stopping_patience", 3
             ),
             early_stopping_metric=config["training"].get("early_stopping_metric", "f1"),
+            logging_steps=config["training"].get("logging_steps", 50),
         )
 
         # Train

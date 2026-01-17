@@ -22,6 +22,65 @@ from .models import EnStackModel
 logger = logging.getLogger("EnStack")
 
 
+class GPUMemoryManager:
+    """
+    OPTIMIZATION: Smart GPU memory manager to reduce fragmentation and OOM errors.
+
+    Uses strategic cache clearing at optimal points instead of excessive clearing
+    which can slow down training.
+    """
+
+    def __init__(self, enabled: bool = True, clear_threshold_mb: float = 100.0):
+        """
+        Initialize GPU memory manager.
+
+        Args:
+            enabled (bool): Whether memory management is enabled.
+            clear_threshold_mb (float): Clear cache if allocated memory changes by this amount (MB).
+        """
+        self.enabled = enabled and torch.cuda.is_available()
+        self.clear_threshold_mb = clear_threshold_mb
+        self.last_allocated_mb = 0.0
+
+        if self.enabled:
+            logger.info(
+                f"GPU Memory Manager enabled (threshold={clear_threshold_mb}MB)"
+            )
+
+    def check_and_clear(self, force: bool = False) -> None:
+        """
+        Checks memory usage and clears cache if threshold exceeded.
+
+        Args:
+            force (bool): Force cache clearing regardless of threshold.
+        """
+        if not self.enabled:
+            return
+
+        current_allocated_mb = torch.cuda.memory_allocated() / (1024**2)
+        delta_mb = abs(current_allocated_mb - self.last_allocated_mb)
+
+        if force or delta_mb > self.clear_threshold_mb:
+            torch.cuda.empty_cache()
+            self.last_allocated_mb = torch.cuda.memory_allocated() / (1024**2)
+
+            if force:
+                logger.debug(
+                    f"Forced GPU cache clear (allocated: {self.last_allocated_mb:.1f}MB)"
+                )
+
+    def get_memory_stats(self) -> Dict[str, float]:
+        """Returns current GPU memory statistics."""
+        if not self.enabled:
+            return {}
+
+        return {
+            "allocated_mb": torch.cuda.memory_allocated() / (1024**2),
+            "reserved_mb": torch.cuda.memory_reserved() / (1024**2),
+            "max_allocated_mb": torch.cuda.max_memory_allocated() / (1024**2),
+        }
+
+
 class EnStackTrainer:
     """
     Trainer class for EnStack vulnerability detection models.
@@ -42,6 +101,8 @@ class EnStackTrainer:
         gradient_accumulation_steps: int = 1,
         early_stopping_patience: int = 0,
         early_stopping_metric: str = "f1",
+        logging_steps: int = 50,
+        enable_memory_management: bool = True,
     ) -> None:
         """
         Initialize the EnStackTrainer.
@@ -59,6 +120,8 @@ class EnStackTrainer:
             early_stopping_patience (int): Number of epochs to wait before stopping.
                 If 0, early stopping is disabled. Default: 0 (disabled).
             early_stopping_metric (str): Metric to monitor for early stopping ('f1' or 'loss').
+            logging_steps (int): Log metrics to TensorBoard every N steps.
+            enable_memory_management (bool): OPTIMIZATION - Enable smart GPU memory management.
         """
         self.model = model
         self.train_loader = train_loader
@@ -69,6 +132,7 @@ class EnStackTrainer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.use_amp = use_amp
         self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.logging_steps = logging_steps
 
         # Early stopping parameters
         self.early_stopping_patience = early_stopping_patience
@@ -84,6 +148,9 @@ class EnStackTrainer:
 
         self.model.to(self.device)
         logger.info(f"Model moved to {self.device}")
+
+        # OPTIMIZATION: Initialize GPU memory manager
+        self.memory_manager = GPUMemoryManager(enabled=enable_memory_management)
 
         # Initialize optimizer
         self.optimizer = AdamW(self.model.parameters(), lr=learning_rate)
@@ -372,7 +439,7 @@ class EnStackTrainer:
             )
 
             # Log to TensorBoard
-            if self.writer:
+            if self.writer and (step % self.logging_steps == 0 or step == 0):
                 global_step = (epoch - 1) * len(self.train_loader) + step
                 self.writer.add_scalar(
                     "Train/Loss",
@@ -401,8 +468,8 @@ class EnStackTrainer:
                 )
 
                 # Clear VRAM cache after checkpoint to prevent OOM
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                # OPTIMIZATION: Use smart memory manager instead of always clearing
+                self.memory_manager.check_and_clear(force=False)
 
         # Calculate metrics
         if len(all_labels) == 0:
@@ -492,9 +559,8 @@ class EnStackTrainer:
             f"F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}"
         )
 
-        # Clear VRAM after evaluation
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # OPTIMIZATION: Strategic cache clear after evaluation
+        self.memory_manager.check_and_clear(force=True)
 
         return metrics
 
@@ -940,8 +1006,7 @@ class EnStackTrainer:
             np.save(cache_path, features)
             logger.info(f"Cached features saved to {cache_path}")
 
-        # Clear VRAM after feature extraction
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # OPTIMIZATION: Strategic cache clear after feature extraction
+        self.memory_manager.check_and_clear(force=True)
 
         return cast(np.ndarray, features)
