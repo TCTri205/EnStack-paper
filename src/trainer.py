@@ -271,6 +271,7 @@ class EnStackTrainer:
             )
             # Manually track step since we're using islice
             step_offset = resume_step
+            batches_to_train = remaining_batches  # Track actual batches to train
         else:
             train_iterator = self.train_loader
             progress_bar = tqdm(
@@ -280,6 +281,7 @@ class EnStackTrainer:
                 leave=False,
             )
             step_offset = 0
+            batches_to_train = total_batches
 
         trained_count = 0  # Track actual batches trained (excluding skipped)
 
@@ -307,9 +309,10 @@ class EnStackTrainer:
                 self.scaler.scale(loss).backward()
 
                 # Update weights only after accumulating gradients OR at the end of epoch
+                # Use trained_count to check if last batch in this training session
                 if (step + 1) % self.gradient_accumulation_steps == 0 or (
-                    step + 1
-                ) == len(self.train_loader):
+                    trained_count == batches_to_train
+                ):
                     # Unscale gradients and clip
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(
@@ -338,9 +341,10 @@ class EnStackTrainer:
                 loss.backward()
 
                 # Update weights only after accumulating gradients OR at the end of epoch
+                # Use trained_count to check if last batch in this training session
                 if (step + 1) % self.gradient_accumulation_steps == 0 or (
-                    step + 1
-                ) == len(self.train_loader):
+                    trained_count == batches_to_train
+                ):
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), max_norm=1.0
                     )
