@@ -209,7 +209,7 @@ def find_latest_checkpoint(output_dir: Path) -> Optional[str]:
 
     # Iterate over all directories in output_dir
     for path in output_dir.iterdir():
-        if not path.is_dir():
+        if not path.is_dir() or path.name.startswith("."):
             continue
 
         state_path = path / "training_state.pth"

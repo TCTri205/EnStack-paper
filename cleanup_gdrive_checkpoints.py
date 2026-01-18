@@ -106,6 +106,19 @@ if __name__ == "__main__":
         help="Show what would be deleted without actually deleting",
     )
 
+    parser.add_argument(
+        "--all-models",
+        action="store_true",
+        help="Scan all model subdirectories in the parent folder",
+    )
+
     args = parser.parse_args()
 
-    cleanup_temp_checkpoints(args.path, dry_run=args.dry_run)
+    if args.all_models:
+        parent_dir = Path(args.path).parent
+        print(f"🔍 Scanning all model directories in: {parent_dir}")
+        for model_dir in parent_dir.iterdir():
+            if model_dir.is_dir() and not model_dir.name.startswith("."):
+                cleanup_temp_checkpoints(str(model_dir), dry_run=args.dry_run)
+    else:
+        cleanup_temp_checkpoints(args.path, dry_run=args.dry_run)

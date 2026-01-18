@@ -68,6 +68,17 @@ The project is designed to run on Google Colab. See the [main_pipeline.ipynb](no
 4. Install dependencies
 5. Run the pipeline cells
 
+### Google Drive Optimization
+
+This project includes a specialized **"Local-First"** checkpoint saving strategy to handle the latency and unreliability of the Google Drive (FUSE) filesystem:
+
+- **Fast Saving**: Models are first saved to the local VM SSD (`/content/temp_checkpoints`), making the process 5-10x faster.
+- **Safe I/O**: Checkpoints are copied to Drive in a single operation with `os.sync()` to ensure data integrity.
+- **Resilience**: Automatic retry mechanism and validation checks to prevent corrupted checkpoints.
+- **Cleanup Utility**: Use `python cleanup_gdrive_checkpoints.py` to remove any orphaned temporary folders from your Drive.
+
+For more details, see [GDRIVE_CHECKPOINT_FIX.md](GDRIVE_CHECKPOINT_FIX.md).
+
 ## Quick Start
 
 ### 1. Prepare Your Data

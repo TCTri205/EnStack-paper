@@ -187,54 +187,6 @@ class EnStackTrainer:
                 "TensorBoard not installed, logging disabled. Install with 'pip install tensorboard'"
             )
 
-    def _validate_checkpoint_integrity(self, checkpoint_dir: Path) -> bool:
-        """
-        IMPROVEMENT 1: Validates checkpoint file integrity before loading.
-
-        Args:
-            checkpoint_dir (Path): Checkpoint directory path.
-
-        Returns:
-            bool: True if checkpoint is valid, raises exception otherwise.
-
-        Raises:
-            FileNotFoundError: If required files are missing.
-            ValueError: If files are corrupted or empty.
-        """
-        logger.info("🔍 Validating checkpoint integrity...")
-
-        required_files = ["training_state.pth", "config.json"]
-        model_weight_files = ["model.safetensors", "pytorch_model.bin"]
-
-        # Check required files
-        for req_file in required_files:
-            file_path = checkpoint_dir / req_file
-            if not file_path.exists():
-                raise FileNotFoundError(
-                    f"❌ Required file missing: {req_file} in {checkpoint_dir}"
-                )
-            # Verify file is not empty
-            if file_path.stat().st_size == 0:
-                raise ValueError(f"❌ File is empty: {req_file}")
-
-        # Check at least one model weight file exists
-        has_weights = False
-        for weight_file in model_weight_files:
-            weight_path = checkpoint_dir / weight_file
-            if weight_path.exists() and weight_path.stat().st_size > 0:
-                has_weights = True
-                logger.info(f"  ✅ Found model weights: {weight_file}")
-                break
-
-        if not has_weights:
-            raise FileNotFoundError(
-                f"❌ No valid model weights found in {checkpoint_dir}. "
-                f"Expected one of: {model_weight_files}"
-            )
-
-        logger.info("✅ Checkpoint integrity validated")
-        return True
-
     def _validate_optimizer_consistency(
         self, state: Dict, expected_steps: int, tolerance: int = 20
     ) -> None:
@@ -314,7 +266,13 @@ class EnStackTrainer:
             raise FileNotFoundError(f"Checkpoint not found at {checkpoint_dir}")
 
         # IMPROVEMENT 1: Validate checkpoint integrity before loading
-        self._validate_checkpoint_integrity(checkpoint_dir)
+        try:
+            from .utils import quick_verify_checkpoint
+
+            quick_verify_checkpoint(str(checkpoint_dir))
+        except (FileNotFoundError, ValueError) as e:
+            logger.error(f"❌ Checkpoint validation failed: {e}")
+            raise
 
         # Load model weights
         from transformers import RobertaForSequenceClassification
