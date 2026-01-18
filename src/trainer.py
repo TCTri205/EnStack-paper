@@ -204,13 +204,27 @@ class EnStackTrainer:
         # Load model weights
         from transformers import RobertaForSequenceClassification
 
-        # We need to reload the inner model using HF's from_pretrained
-        # This ensures we get the weights correctly
-        self.model.model = RobertaForSequenceClassification.from_pretrained(
+        # FIX: Load weights into the EXISTING model instance to preserve parameter references
+        # This prevents the optimizer (initialized in __init__) from becoming detached
+        logger.info(f"Loading model weights from {checkpoint_dir}...")
+
+        # Load into a temporary model first to handle safetensors/bin format automatically
+        temp_model = RobertaForSequenceClassification.from_pretrained(
             checkpoint_dir, num_labels=self.model.num_labels
         )
+
+        # Transfer weights to our training model
+        self.model.model.load_state_dict(temp_model.state_dict())
+
+        # Clean up
+        del temp_model
+        import gc
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
         self.model.to(self.device)
-        logger.info(f"Loaded model weights from {checkpoint_dir}")
+        logger.info(f"Successfully loaded weights into existing model instance")
 
         # Load training state
         state_path = checkpoint_dir / "training_state.pth"
@@ -222,6 +236,11 @@ class EnStackTrainer:
 
             if self.scheduler is not None and "scheduler_state_dict" in state:
                 self.scheduler.load_state_dict(state["scheduler_state_dict"])
+
+            # FIX: Load Scaler state for AMP stability
+            if self.scaler is not None and "scaler_state_dict" in state:
+                self.scaler.load_state_dict(state["scaler_state_dict"])
+                logger.info("Loaded AMP Scaler state")
 
             epoch = state.get("epoch", 0)
             step = state.get("step", 0)
@@ -294,6 +313,84 @@ class EnStackTrainer:
 
         return LambdaLR(self.optimizer, lr_lambda)
 
+    def _train_step(
+        self, batch: Dict[str, torch.Tensor], step: int, trained_count: int, total_batches: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Executes a single training step (forward, backward, optimizer).
+
+        Args:
+            batch: Batch data dictionary.
+            step: Current global step.
+            trained_count: Number of batches trained so far in this epoch.
+            total_batches: Total batches to train in this epoch.
+
+        Returns:
+            Tuple[loss, logits]: Unscaled loss and logits.
+        """
+        # Move batch to device
+        input_ids = batch["input_ids"].to(self.device)
+        attention_mask = batch["attention_mask"].to(self.device)
+        labels = batch["labels"].to(self.device)
+
+        # Forward pass with AMP
+        if self.scaler:
+            # Mixed precision training
+            with torch.amp.autocast(device_type="cuda"):
+                outputs = self.model(input_ids, attention_mask, labels)
+                loss = outputs["loss"]
+                logits = outputs["logits"]
+
+            # Scale loss for gradient accumulation
+            scaled_loss = loss / self.gradient_accumulation_steps
+
+            # Backward pass with scaled loss
+            self.scaler.scale(scaled_loss).backward()
+
+            # Update weights only after accumulating gradients OR at the end of epoch
+            if (step + 1) % self.gradient_accumulation_steps == 0 or (
+                trained_count == total_batches
+            ):
+                # Unscale gradients and clip
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+                # Step optimizer and scaler
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+
+                # Zero gradients AFTER optimizer step
+                self.optimizer.zero_grad(set_to_none=True)
+
+                if self.scheduler is not None:
+                    self.scheduler.step()
+        else:
+            # Standard training (FP32)
+            outputs = self.model(input_ids, attention_mask, labels)
+            loss = outputs["loss"]
+            logits = outputs["logits"]
+
+            # Scale loss for gradient accumulation
+            scaled_loss = loss / self.gradient_accumulation_steps
+
+            # Backward pass
+            scaled_loss.backward()
+
+            # Update weights only after accumulating gradients OR at the end of epoch
+            if (step + 1) % self.gradient_accumulation_steps == 0 or (
+                trained_count == total_batches
+            ):
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
+
+                # Zero gradients AFTER optimizer step
+                self.optimizer.zero_grad(set_to_none=True)
+
+                if self.scheduler is not None:
+                    self.scheduler.step()
+
+        return loss, logits
+
     def train_epoch(
         self, epoch: int, resume_step: int = 0, save_steps: int = 500
     ) -> Dict[str, float]:
@@ -362,78 +459,13 @@ class EnStackTrainer:
             step = step_offset + batch_idx  # Actual step in epoch
             trained_count += 1
 
-            # Move batch to device
-            input_ids = batch["input_ids"].to(self.device)
-            attention_mask = batch["attention_mask"].to(self.device)
-            labels = batch["labels"].to(self.device)
-
-            # Forward pass with AMP
-            if self.scaler:
-                # Mixed precision training
-                with torch.cuda.amp.autocast():
-                    outputs = self.model(input_ids, attention_mask, labels)
-                    loss = outputs["loss"]
-                    logits = outputs["logits"]
-
-                # Scale loss for gradient accumulation
-                loss = loss / self.gradient_accumulation_steps
-
-                # Backward pass with scaled loss
-                self.scaler.scale(loss).backward()
-
-                # Update weights only after accumulating gradients OR at the end of epoch
-                # Use trained_count to check if last batch in this training session
-                if (step + 1) % self.gradient_accumulation_steps == 0 or (
-                    trained_count == batches_to_train
-                ):
-                    # Unscale gradients and clip
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), max_norm=1.0
-                    )
-
-                    # Step optimizer and scaler
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-
-                    # Zero gradients AFTER optimizer step
-                    self.optimizer.zero_grad(set_to_none=True)
-
-                    if self.scheduler is not None:
-                        self.scheduler.step()
-            else:
-                # Standard training (FP32)
-                outputs = self.model(input_ids, attention_mask, labels)
-                loss = outputs["loss"]
-                logits = outputs["logits"]
-
-                # Scale loss for gradient accumulation
-                loss = loss / self.gradient_accumulation_steps
-
-                # Backward pass
-                loss.backward()
-
-                # Update weights only after accumulating gradients OR at the end of epoch
-                # Use trained_count to check if last batch in this training session
-                if (step + 1) % self.gradient_accumulation_steps == 0 or (
-                    trained_count == batches_to_train
-                ):
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), max_norm=1.0
-                    )
-                    self.optimizer.step()
-
-                    # Zero gradients AFTER optimizer step
-                    self.optimizer.zero_grad(set_to_none=True)
-
-                    if self.scheduler is not None:
-                        self.scheduler.step()
+            loss, logits = self._train_step(batch, step, trained_count, batches_to_train)
 
             # Track metrics (use unscaled loss for logging)
             total_loss += loss.item() * self.gradient_accumulation_steps
             preds = torch.argmax(logits, dim=-1)
             all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            all_labels.extend(batch["labels"].cpu().numpy())
 
             # Update progress bar with detailed info
             current_lr = self.optimizer.param_groups[0]["lr"]
@@ -930,6 +962,10 @@ class EnStackTrainer:
             if self.scheduler is not None:
                 state_dict["scheduler_state_dict"] = self.scheduler.state_dict()
 
+            # FIX: Save Scaler state
+            if self.scaler is not None:
+                state_dict["scaler_state_dict"] = self.scaler.state_dict()
+
             torch.save(state_dict, temp_dir / "training_state.pth")
 
             # Atomic move: only if everything succeeded
@@ -1031,7 +1067,7 @@ class EnStackTrainer:
         # Use inference_mode for maximum performance during inference
         with torch.inference_mode():
             # OPTIMIZATION: Enable AMP (FP16) for inference speedup and lower VRAM
-            with torch.cuda.amp.autocast(enabled=self.use_amp):
+            with torch.amp.autocast(device_type="cuda", enabled=self.use_amp):
                 for batch in progress_bar:
                     input_ids = batch["input_ids"].to(self.device, non_blocking=True)
                     attention_mask = batch["attention_mask"].to(
