@@ -18,6 +18,7 @@ sys.path.append(str(project_root))
 from typing import Dict, List, Optional, Tuple  # noqa: E402
 
 import numpy as np  # noqa: E402
+import torch  # noqa: E402
 
 from src.dataset import create_dataloaders  # noqa: E402
 from src.models import create_model  # noqa: E402
@@ -216,8 +217,8 @@ def find_latest_checkpoint(output_dir: Path) -> Optional[str]:
     # Regex to parse folder names
     # Matches: checkpoint_epoch{E}_step{S}
     epoch_step_pattern = re.compile(r"checkpoint_epoch(\d+)_step(\d+)")
-    # Matches: best_model_epoch_{E}
-    best_model_pattern = re.compile(r"best_model_epoch_(\d+)")
+    # Matches: best_model_epoch_{E} (Legacy support)
+    best_model_legacy_pattern = re.compile(r"best_model_epoch_(\d+)")
 
     for path in output_dir.iterdir():
         if not path.is_dir():
@@ -225,6 +226,17 @@ def find_latest_checkpoint(output_dir: Path) -> Optional[str]:
 
         # Verify it has training state
         if not (path / "training_state.pth").exists():
+            continue
+
+        # Check for standard 'best_model' (new format)
+        if path.name == "best_model":
+            # Load state to get epoch
+            try:
+                state = torch.load(path / "training_state.pth", map_location="cpu")
+                epoch = state.get("epoch", 0)
+                checkpoints.append((epoch, 0, path))
+            except Exception as e:
+                logger.warning(f"Failed to read best_model state: {e}")
             continue
 
         # Check epoch_step pattern
@@ -235,12 +247,10 @@ def find_latest_checkpoint(output_dir: Path) -> Optional[str]:
             checkpoints.append((epoch, step, path))
             continue
 
-        # Check best_model pattern (assume step 0 or end of epoch)
-        match = best_model_pattern.match(path.name)
+        # Check best_model legacy pattern
+        match = best_model_legacy_pattern.match(path.name)
         if match:
             epoch = int(match.group(1))
-            # Best model is usually saved at end of epoch, so effectively step=0 (or high)
-            # Let's treat it as step 0 for that epoch.
             checkpoints.append((epoch, 0, path))
             continue
 

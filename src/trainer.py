@@ -787,9 +787,9 @@ class EnStackTrainer:
                 if save_best and val_metrics["f1"] > self.best_val_f1:
                     self.best_val_f1 = val_metrics["f1"]
                     self.best_val_acc = val_metrics["accuracy"]
-                    self.save_checkpoint(
-                        f"best_model_epoch_{epoch}", epoch=epoch, step=0
-                    )
+
+                    # Use fixed name to ensure only ONE best model exists (overwrites previous)
+                    self.save_checkpoint("best_model", epoch=epoch, step=0)
                     logger.info(f"New best model saved (F1: {self.best_val_f1:.4f})")
 
                 # Early stopping check
