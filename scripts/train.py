@@ -197,87 +197,64 @@ def load_labels_from_file(data_path: str) -> np.ndarray:
 
 def find_latest_checkpoint(output_dir: Path) -> Optional[str]:
     """
-    Finds the latest valid checkpoint in the output directory.
-    Prioritizes last_checkpoint, then sorts epoch-based checkpoints.
+    Finds the latest valid checkpoint in the output directory by inspecting training state.
+    Compares all checkpoints (last, recovery, intermediate) by epoch and step.
+    Handles the case where step=0 means 'End of Epoch' (prioritized over mid-epoch steps).
     """
     if not output_dir.exists():
         return None
 
     logger = logging.getLogger("EnStack")
-
-    # Priority 1: last_checkpoint (end-of-epoch completion)
-    last_checkpoint = output_dir / "last_checkpoint"
-    if last_checkpoint.exists() and (last_checkpoint / "training_state.pth").exists():
-        logger.info(f"✅ Found end-of-epoch checkpoint: {last_checkpoint}")
-        return str(last_checkpoint)
-
-    # Collect all other valid checkpoints
     checkpoints = []
 
-    # Regex to parse folder names
-    # Matches: checkpoint_epoch{E}_step{S}
-    epoch_step_pattern = re.compile(r"checkpoint_epoch(\d+)_step(\d+)")
-    # Matches: best_model_epoch_{E} (Legacy support)
-    best_model_legacy_pattern = re.compile(r"best_model_epoch_(\d+)")
-
+    # Iterate over all directories in output_dir
     for path in output_dir.iterdir():
         if not path.is_dir():
             continue
 
-        # Verify it has training state
-        if not (path / "training_state.pth").exists():
+        state_path = path / "training_state.pth"
+        if not state_path.exists():
             continue
 
-        # Check for standard 'best_model' (new format)
-        if path.name == "best_model":
-            # Load state to get epoch
-            try:
-                state = torch.load(path / "training_state.pth", map_location="cpu")
-                epoch = state.get("epoch", 0)
-                checkpoints.append((epoch, 0, path))
-            except Exception as e:
-                logger.warning(f"Failed to read best_model state: {e}")
+        try:
+            # Lightweight load of state dict (CPU) to check epoch/step
+            state = torch.load(state_path, map_location="cpu")
+            epoch = state.get("epoch", 0)
+            step = state.get("step", 0)
+
+            # CRITICAL: Treat step=0 (end of epoch) as larger than any mid-epoch step
+            # using float('inf') for comparison
+            effective_step = float("inf") if step == 0 else step
+
+            checkpoints.append((epoch, effective_step, path))
+
+            # Debug log (verbose, maybe comment out for production)
+            # logger.debug(f"Found checkpoint {path.name}: Epoch {epoch}, Step {step}")
+
+        except Exception as e:
+            logger.warning(f"Could not read state from {path.name}: {e}")
             continue
 
-        # Check epoch_step pattern
-        match = epoch_step_pattern.match(path.name)
-        if match:
-            epoch = int(match.group(1))
-            step = int(match.group(2))
-            checkpoints.append((epoch, step, path))
-            continue
+    if not checkpoints:
+        logger.info("No valid checkpoints found, starting fresh.")
+        return None
 
-        # Check best_model legacy pattern
-        match = best_model_legacy_pattern.match(path.name)
-        if match:
-            epoch = int(match.group(1))
-            checkpoints.append((epoch, 0, path))
-            continue
+    # Sort descending by (epoch, effective_step)
+    # This ensures (Epoch 2, Step 100) > (Epoch 1, End/inf)
+    # And (Epoch 1, End/inf) > (Epoch 1, Step 999)
+    checkpoints.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
-    # Priority 2: Highest epoch/step checkpoint
-    if checkpoints:
-        # Sort descending by epoch then step
-        checkpoints.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        latest = checkpoints[0]
-        logger.info(
-            f"✅ Found intermediate checkpoint: {latest[2]} (Epoch {latest[0]}, Step {latest[1]})"
-        )
-        return str(latest[2])
+    best_epoch, best_eff_step, best_path = checkpoints[0]
 
-    # Priority 3: Recovery checkpoint (fallback)
-    recovery_checkpoint = output_dir / "recovery_checkpoint"
-    if (
-        recovery_checkpoint.exists()
-        and (recovery_checkpoint / "training_state.pth").exists()
-    ):
-        logger.warning(
-            f"⚠️  Only found mid-epoch recovery checkpoint: {recovery_checkpoint}"
-        )
-        logger.warning("   This means the last epoch did not complete successfully.")
-        return str(recovery_checkpoint)
+    # Format step for display
+    display_step = 0 if best_eff_step == float("inf") else best_eff_step
 
-    logger.info("No checkpoint found, starting fresh.")
-    return None
+    logger.info(
+        f"✅ Found latest checkpoint: {best_path.name} "
+        f"(Epoch {best_epoch}, Step {display_step})"
+    )
+
+    return str(best_path)
 
 
 def train_base_models(
