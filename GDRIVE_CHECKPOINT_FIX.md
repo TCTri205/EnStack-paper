@@ -3,14 +3,21 @@
 ## Tóm tắt Vấn đề
 Hệ thống lưu checkpoint trên Google Drive gặp lỗi **mất đồng bộ** do cơ chế `shutil.move()` không ổn định trên FUSE filesystem. Điều này dẫn đến các thư mục `.tmp` không được chuyển đổi thành checkpoint thực tế.
 
-## Thay đổi đã thực hiện
+## Thay đổi đã thực hiện (Bản Tối ưu hóa)
 **File**: `src/trainer.py` - Hàm `save_checkpoint()`
 
 **Cải tiến chính**:
-1. **Phát hiện Google Drive tự động**: Kiểm tra nếu đường dẫn chứa `/content/drive/`
-2. **Sử dụng COPY thay vì MOVE**: Trên Google Drive, sử dụng `shutil.copytree()` thay vì `shutil.move()`
-3. **Thời gian chờ tăng lên**: Tăng `time.sleep()` từ 1s lên 2s để đảm bảo Drive đồng bộ
-4. **Xác minh kép**: Kiểm tra file tồn tại và kích thước > 0 sau khi copy
+1. **Chiến lược "Local-First"**:
+   - Khi phát hiện Google Drive, hệ thống sẽ tạo thư mục tạm trên **Local VM SSD** (`/content/temp_checkpoints`) thay vì trên Drive.
+   - Việc ghi file model/optimizer (nặng hàng trăm MB) diễn ra **cực nhanh** trên SSD.
+   - Tránh hoàn toàn lỗi mạng/timeout khi `save_pretrained` đang chạy.
+
+2. **Copy An toàn & Sync**:
+   - Sau khi ghi xong ở Local, thực hiện **một lệnh copy duy nhất** lên Drive.
+   - Gọi `os.sync()` để ép hệ điều hành đẩy dữ liệu từ RAM xuống đĩa.
+   - Tăng thời gian chờ lên 3s.
+
+3. **Xác minh kép**: Kiểm tra file tồn tại và kích thước > 0 sau khi copy.
 
 ## Các Bước Khôi phục Training
 

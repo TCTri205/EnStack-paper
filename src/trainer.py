@@ -1192,15 +1192,30 @@ class EnStackTrainer:
 
         for attempt in range(max_retries):
             try:
-                # Create temp directory in same parent to ensure same filesystem
-                temp_dir = Path(
-                    tempfile.mkdtemp(
-                        dir=self.output_dir, prefix=f".tmp_{checkpoint_name}_"
+                # OPTIMIZATION: "Local-First" Strategy
+                # If saving to Google Drive, create temp dir on LOCAL filesystem (VM SSD) first.
+                # This makes saving model/optimizer states much faster and reliable (no network I/O).
+                if is_gdrive and Path("/content").exists():
+                    # Create temp dir in /content (Local VM)
+                    temp_base = Path("/content/temp_checkpoints")
+                    temp_base.mkdir(parents=True, exist_ok=True)
+                    temp_dir = Path(
+                        tempfile.mkdtemp(
+                            dir=temp_base, prefix=f".tmp_{checkpoint_name}_"
+                        )
                     )
-                )
+                    logger.debug(f"Created fast local temp dir: {temp_dir}")
+                else:
+                    # Standard behavior: Create temp dir in same parent (atomic move compatible)
+                    temp_dir = Path(
+                        tempfile.mkdtemp(
+                            dir=self.output_dir, prefix=f".tmp_{checkpoint_name}_"
+                        )
+                    )
+                    logger.debug(f"Created standard temp dir: {temp_dir}")
 
                 # Save model to temp directory first
-                logger.debug(f"Saving model to temporary location: {temp_dir}")
+                logger.debug(f"Saving model to temporary location...")
                 self.model.save_pretrained(str(temp_dir))
 
                 # Save optimizer and training state
@@ -1242,19 +1257,31 @@ class EnStackTrainer:
                             self._force_delete(backup_path)
                         logger.debug(f"Creating backup: {backup_path}")
                         shutil.copytree(str(save_path), str(backup_path))
-                        time.sleep(0.5)  # Wait for Drive sync
+
+                        # Sync and wait
+                        import os
+
+                        if hasattr(os, "sync"):
+                            os.sync()
+                        time.sleep(0.5)
 
                         # Remove old checkpoint
                         self._force_delete(save_path)
-                        time.sleep(0.5)  # Wait for Drive to register deletion
+                        time.sleep(0.5)
 
                     # Copy temp to final location (safer than move on Drive)
                     logger.debug(f"Copying checkpoint to final location: {save_path}")
                     shutil.copytree(str(temp_dir), str(save_path))
 
-                    # CRITICAL: Wait for Google Drive sync
+                    # CRITICAL: Flush OS buffers and wait for Google Drive sync
+                    import os
+
+                    if hasattr(os, "sync"):
+                        logger.debug("Flushing OS buffers (os.sync)...")
+                        os.sync()
+
                     logger.debug("Waiting for Google Drive sync...")
-                    time.sleep(2.0)  # Increased wait time for Drive
+                    time.sleep(3.0)  # Increased wait time for Drive to 3s
 
                     # VERIFY: Check that checkpoint actually exists and has required files
                     if not save_path.exists():
