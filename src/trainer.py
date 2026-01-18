@@ -226,7 +226,7 @@ class EnStackTrainer:
         torch.cuda.empty_cache()
 
         self.model.to(self.device)
-        logger.info(f"Successfully loaded weights into existing model instance")
+        logger.info("Successfully loaded weights into existing model instance")
 
         # Load training state
         state_path = checkpoint_dir / "training_state.pth"
@@ -670,6 +670,9 @@ class EnStackTrainer:
         if self.train_loader is None:
             raise ValueError("Training loader is not provided")
 
+        # Clean up any leftover temporary checkpoints from previous runs
+        self._cleanup_temp_checkpoints()
+
         # Setup scheduler
         num_training_steps = len(self.train_loader) * num_epochs
         num_warmup_steps = num_training_steps // 10
@@ -894,6 +897,23 @@ class EnStackTrainer:
         logger.info("Training completed")
         return history
 
+    def _cleanup_temp_checkpoints(self) -> None:
+        """
+        Cleans up any leftover temporary checkpoint directories.
+        These can remain if a previous save was interrupted.
+        """
+        temp_patterns = [".tmp_", ".backup_"]
+        cleaned_count = 0
+
+        for path in self.output_dir.iterdir():
+            if path.is_dir() and any(path.name.startswith(p) for p in temp_patterns):
+                logger.info(f"🧹 Cleaning up leftover temp directory: {path.name}")
+                self._force_delete(path)
+                cleaned_count += 1
+
+        if cleaned_count > 0:
+            logger.info(f"✅ Cleaned up {cleaned_count} temporary checkpoint(s)")
+
     def _force_delete(self, path: Path) -> None:
         """
         Robustly deletes a directory, handling read-only files and errors.
@@ -966,6 +986,7 @@ class EnStackTrainer:
     ) -> None:
         """
         Saves the model checkpoint with atomic write to prevent corruption.
+        Includes retry mechanism and verification for Google Drive compatibility.
 
         Args:
             checkpoint_name (str): Name of the checkpoint.
@@ -974,78 +995,140 @@ class EnStackTrainer:
         """
         import shutil
         import tempfile
+        import time
 
         save_path = self.output_dir / checkpoint_name
         save_path.mkdir(parents=True, exist_ok=True)
 
         # Use temporary directory for atomic save
         temp_dir = None
-        try:
-            # Create temp directory in same parent to ensure same filesystem
-            temp_dir = Path(
-                tempfile.mkdtemp(dir=self.output_dir, prefix=f".tmp_{checkpoint_name}_")
-            )
+        max_retries = 3
+        retry_delay = 2.0  # seconds
 
-            # Save model to temp directory first
-            logger.debug(f"Saving model to temporary location: {temp_dir}")
-            self.model.save_pretrained(str(temp_dir))
+        for attempt in range(max_retries):
+            try:
+                # Create temp directory in same parent to ensure same filesystem
+                temp_dir = Path(
+                    tempfile.mkdtemp(
+                        dir=self.output_dir, prefix=f".tmp_{checkpoint_name}_"
+                    )
+                )
 
-            # Save optimizer and training state
-            state_dict = {
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "best_val_f1": self.best_val_f1,
-                "best_val_acc": self.best_val_acc,
-                "epoch": epoch,
-                "step": step,
-                "total_batches": len(self.train_loader) if self.train_loader else 0,
-            }
+                # Save model to temp directory first
+                logger.debug(f"Saving model to temporary location: {temp_dir}")
+                self.model.save_pretrained(str(temp_dir))
 
-            if self.scheduler is not None:
-                state_dict["scheduler_state_dict"] = self.scheduler.state_dict()
+                # Save optimizer and training state
+                state_dict = {
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                    "best_val_f1": self.best_val_f1,
+                    "best_val_acc": self.best_val_acc,
+                    "epoch": epoch,
+                    "step": step,
+                    "total_batches": len(self.train_loader) if self.train_loader else 0,
+                }
 
-            # FIX: Save Scaler state
-            if self.scaler is not None:
-                state_dict["scaler_state_dict"] = self.scaler.state_dict()
+                if self.scheduler is not None:
+                    state_dict["scheduler_state_dict"] = self.scheduler.state_dict()
 
-            torch.save(state_dict, temp_dir / "training_state.pth")
+                # FIX: Save Scaler state
+                if self.scaler is not None:
+                    state_dict["scaler_state_dict"] = self.scaler.state_dict()
 
-            # Atomic move: only if everything succeeded
-            # First, backup existing checkpoint if it exists
-            backup_path = None
-            if save_path.exists():
-                backup_path = self.output_dir / f".backup_{checkpoint_name}"
-                if backup_path.exists():
+                torch.save(state_dict, temp_dir / "training_state.pth")
+
+                # CRITICAL: Verify temp directory contents before moving
+                required_files = ["training_state.pth", "config.json"]
+                for req_file in required_files:
+                    if not (temp_dir / req_file).exists():
+                        raise FileNotFoundError(
+                            f"Required file {req_file} not found in temp directory"
+                        )
+
+                # Atomic move: only if everything succeeded
+                # First, backup existing checkpoint if it exists
+                backup_path = None
+                if save_path.exists():
+                    backup_path = self.output_dir / f".backup_{checkpoint_name}"
+                    if backup_path.exists():
+                        self._force_delete(backup_path)
+                    logger.debug(f"Creating backup: {backup_path}")
+                    shutil.move(str(save_path), str(backup_path))
+
+                # Move temp to final location
+                logger.debug(f"Moving checkpoint to final location: {save_path}")
+                shutil.move(str(temp_dir), str(save_path))
+                temp_dir = None  # Successfully moved, don't clean up
+
+                # CRITICAL: Wait for Google Drive sync (if on mounted Drive)
+                if "/content/drive/" in str(save_path):
+                    time.sleep(1.0)  # Give Drive 1 second to register the file
+
+                # VERIFY: Check that checkpoint actually exists and has required files
+                if not save_path.exists():
+                    raise FileNotFoundError(
+                        f"Checkpoint directory {save_path} does not exist after save!"
+                    )
+
+                for req_file in required_files:
+                    final_file = save_path / req_file
+                    if not final_file.exists():
+                        raise FileNotFoundError(
+                            f"Required file {req_file} missing from final checkpoint!"
+                        )
+                    # Verify file is not empty
+                    if final_file.stat().st_size == 0:
+                        raise ValueError(f"File {req_file} is empty!")
+
+                # Remove backup on success
+                if backup_path and backup_path.exists():
                     self._force_delete(backup_path)
-                logger.debug(f"Creating backup: {backup_path}")
-                shutil.move(str(save_path), str(backup_path))
 
-            # Move temp to final location
-            logger.debug(f"Moving checkpoint to final location: {save_path}")
-            shutil.move(str(temp_dir), str(save_path))
-            temp_dir = None  # Successfully moved, don't clean up
+                logger.info(
+                    f"✅ Checkpoint saved: {checkpoint_name} (epoch={epoch}, step={step})"
+                )
 
-            # Remove backup on success
-            if backup_path and backup_path.exists():
-                self._force_delete(backup_path)
+                # Cleanup old checkpoints if this was a mid-epoch save
+                if checkpoint_name.startswith("checkpoint_epoch"):
+                    self._rotate_checkpoints(keep_last_n=1)
 
-            logger.info(
-                f"✅ Checkpoint saved: {checkpoint_name} (epoch={epoch}, step={step})"
-            )
+                # Success - exit retry loop
+                return
 
-            # Cleanup old checkpoints if this was a mid-epoch save
-            if checkpoint_name.startswith("checkpoint_epoch"):
-                self._rotate_checkpoints(keep_last_n=1)
+            except Exception as e:
+                logger.error(
+                    f"❌ Failed to save checkpoint {checkpoint_name} (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+                logger.error(f"   Epoch: {epoch}, Step: {step}")
 
-        except Exception as e:
-            logger.error(f"❌ Failed to save checkpoint {checkpoint_name}: {e}")
-            logger.error(f"   Epoch: {epoch}, Step: {step}")
-            # Don't raise - allow training to continue even if checkpoint save fails
-            # But log prominently so user knows
-            logger.warning("⚠️  Training will continue but checkpoint may be lost!")
-        finally:
-            # Clean up temp directory if it still exists (save failed)
-            if temp_dir and temp_dir.exists():
-                self._force_delete(temp_dir)
+                # Clean up temp directory if it still exists
+                if temp_dir and temp_dir.exists():
+                    self._force_delete(temp_dir)
+                    temp_dir = None
+
+                # If this is the last attempt, decide whether to raise
+                if attempt == max_retries - 1:
+                    # CRITICAL checkpoints MUST succeed - raise exception
+                    if checkpoint_name in ["best_model", "last_checkpoint"]:
+                        logger.error(
+                            f"⚠️  CRITICAL: {checkpoint_name} save failed after {max_retries} attempts!"
+                        )
+                        raise RuntimeError(
+                            f"Failed to save critical checkpoint {checkpoint_name} after {max_retries} attempts: {e}"
+                        )
+                    else:
+                        # Mid-epoch checkpoints: log warning but continue
+                        logger.warning(
+                            f"⚠️  Training will continue but checkpoint {checkpoint_name} may be lost!"
+                        )
+                else:
+                    # Retry after delay
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+
+        # Final cleanup (should not reach here if successful)
+        if temp_dir and temp_dir.exists():
+            self._force_delete(temp_dir)
 
     def extract_features(
         self,
