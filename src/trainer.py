@@ -6,8 +6,10 @@ and feature extraction from transformer-based models.
 """
 
 import logging
+import os
 import re
 import shutil
+import stat
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, cast
 
@@ -314,7 +316,11 @@ class EnStackTrainer:
         return LambdaLR(self.optimizer, lr_lambda)
 
     def _train_step(
-        self, batch: Dict[str, torch.Tensor], step: int, trained_count: int, total_batches: int
+        self,
+        batch: Dict[str, torch.Tensor],
+        step: int,
+        trained_count: int,
+        total_batches: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Executes a single training step (forward, backward, optimizer).
@@ -459,7 +465,9 @@ class EnStackTrainer:
             step = step_offset + batch_idx  # Actual step in epoch
             trained_count += 1
 
-            loss, logits = self._train_step(batch, step, trained_count, batches_to_train)
+            loss, logits = self._train_step(
+                batch, step, trained_count, batches_to_train
+            )
 
             # Track metrics (use unscaled loss for logging)
             total_loss += loss.item() * self.gradient_accumulation_steps
@@ -857,15 +865,10 @@ class EnStackTrainer:
             # Clean up mid-epoch recovery checkpoint as epoch completed successfully
             recovery_path = self.output_dir / "recovery_checkpoint"
             if recovery_path.exists():
-                import shutil
-
-                try:
-                    shutil.rmtree(recovery_path)
-                    logger.debug(
-                        f"Cleaned up recovery checkpoint (epoch {epoch} completed)"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to clean up recovery checkpoint: {e}")
+                self._force_delete(recovery_path)
+                logger.debug(
+                    f"Cleaned up recovery checkpoint (epoch {epoch} completed)"
+                )
 
             # Reset start_step for next epochs
             start_step = 0
@@ -891,6 +894,32 @@ class EnStackTrainer:
         logger.info("Training completed")
         return history
 
+    def _force_delete(self, path: Path) -> None:
+        """
+        Robustly deletes a directory, handling read-only files and errors.
+        Fixes issues on Windows where shutil.rmtree fails on file locks.
+        """
+        if not path.exists():
+            return
+
+        def handle_remove_readonly(func, path, exc):
+            # Handler for read-only files (common on Windows)
+            excvalue = exc[1]
+            if func in (os.rmdir, os.remove, os.unlink) and isinstance(
+                excvalue, PermissionError
+            ):
+                os.chmod(path, stat.S_IWRITE)
+                func(path)
+            else:
+                # Re-raise if it's a different error
+                raise
+
+        try:
+            shutil.rmtree(path, onerror=handle_remove_readonly)
+        except Exception as e:
+            # Fallback: Just log it, don't crash training
+            logger.warning(f"Failed to force delete {path.name}: {e}")
+
     def _rotate_checkpoints(self, keep_last_n: int = 1) -> None:
         """
         Rotates checkpoints, keeping only the N most recent ones.
@@ -913,12 +942,24 @@ class EnStackTrainer:
         # Identify checkpoints to delete
         if len(checkpoints) > keep_last_n:
             to_delete = checkpoints[:-keep_last_n]
+            kept = checkpoints[-keep_last_n:]
+
+            # Log what we found for transparency
+            logger.info(f"Checkpoint Rotation: Found {len(checkpoints)} checkpoints.")
+            logger.info(f"   Keeping: {[c[2].name for c in kept]}")
+
             for _, _, path in to_delete:
-                logger.info(f"🗑️ Deleting old checkpoint: {path.name}")
-                try:
-                    shutil.rmtree(path)
-                except Exception as e:
-                    logger.warning(f"Failed to delete {path.name}: {e}")
+                logger.info(f"🗑️  Deleting old checkpoint: {path.name}")
+                self._force_delete(path)
+
+                # Verify deletion
+                if path.exists():
+                    logger.error(f"⚠️  Could not delete {path.name} (File locked?)")
+        else:
+            if len(checkpoints) > 0:
+                logger.debug(
+                    f"Checkpoint Rotation: Keeping all {len(checkpoints)} checkpoints (limit={keep_last_n})"
+                )
 
     def save_checkpoint(
         self, checkpoint_name: str = "checkpoint", epoch: int = 0, step: int = 0
@@ -974,7 +1015,7 @@ class EnStackTrainer:
             if save_path.exists():
                 backup_path = self.output_dir / f".backup_{checkpoint_name}"
                 if backup_path.exists():
-                    shutil.rmtree(backup_path)
+                    self._force_delete(backup_path)
                 logger.debug(f"Creating backup: {backup_path}")
                 shutil.move(str(save_path), str(backup_path))
 
@@ -985,7 +1026,7 @@ class EnStackTrainer:
 
             # Remove backup on success
             if backup_path and backup_path.exists():
-                shutil.rmtree(backup_path)
+                self._force_delete(backup_path)
 
             logger.info(
                 f"✅ Checkpoint saved: {checkpoint_name} (epoch={epoch}, step={step})"
@@ -1004,10 +1045,7 @@ class EnStackTrainer:
         finally:
             # Clean up temp directory if it still exists (save failed)
             if temp_dir and temp_dir.exists():
-                try:
-                    shutil.rmtree(temp_dir)
-                except Exception:
-                    pass
+                self._force_delete(temp_dir)
 
     def extract_features(
         self,
