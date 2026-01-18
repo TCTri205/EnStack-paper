@@ -7,6 +7,7 @@ including base models and meta-classifier.
 
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-from typing import Dict, List, Tuple  # noqa: E402
+from typing import Dict, List, Optional, Tuple  # noqa: E402
 
 import numpy as np  # noqa: E402
 
@@ -193,6 +194,82 @@ def load_labels_from_file(data_path: str) -> np.ndarray:
     return data["target"].values
 
 
+def find_latest_checkpoint(output_dir: Path) -> Optional[str]:
+    """
+    Finds the latest valid checkpoint in the output directory.
+    Prioritizes last_checkpoint, then sorts epoch-based checkpoints.
+    """
+    if not output_dir.exists():
+        return None
+
+    logger = logging.getLogger("EnStack")
+
+    # Priority 1: last_checkpoint (end-of-epoch completion)
+    last_checkpoint = output_dir / "last_checkpoint"
+    if last_checkpoint.exists() and (last_checkpoint / "training_state.pth").exists():
+        logger.info(f"✅ Found end-of-epoch checkpoint: {last_checkpoint}")
+        return str(last_checkpoint)
+
+    # Collect all other valid checkpoints
+    checkpoints = []
+
+    # Regex to parse folder names
+    # Matches: checkpoint_epoch{E}_step{S}
+    epoch_step_pattern = re.compile(r"checkpoint_epoch(\d+)_step(\d+)")
+    # Matches: best_model_epoch_{E}
+    best_model_pattern = re.compile(r"best_model_epoch_(\d+)")
+
+    for path in output_dir.iterdir():
+        if not path.is_dir():
+            continue
+
+        # Verify it has training state
+        if not (path / "training_state.pth").exists():
+            continue
+
+        # Check epoch_step pattern
+        match = epoch_step_pattern.match(path.name)
+        if match:
+            epoch = int(match.group(1))
+            step = int(match.group(2))
+            checkpoints.append((epoch, step, path))
+            continue
+
+        # Check best_model pattern (assume step 0 or end of epoch)
+        match = best_model_pattern.match(path.name)
+        if match:
+            epoch = int(match.group(1))
+            # Best model is usually saved at end of epoch, so effectively step=0 (or high)
+            # Let's treat it as step 0 for that epoch.
+            checkpoints.append((epoch, 0, path))
+            continue
+
+    # Priority 2: Highest epoch/step checkpoint
+    if checkpoints:
+        # Sort descending by epoch then step
+        checkpoints.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        latest = checkpoints[0]
+        logger.info(
+            f"✅ Found intermediate checkpoint: {latest[2]} (Epoch {latest[0]}, Step {latest[1]})"
+        )
+        return str(latest[2])
+
+    # Priority 3: Recovery checkpoint (fallback)
+    recovery_checkpoint = output_dir / "recovery_checkpoint"
+    if (
+        recovery_checkpoint.exists()
+        and (recovery_checkpoint / "training_state.pth").exists()
+    ):
+        logger.warning(
+            f"⚠️  Only found mid-epoch recovery checkpoint: {recovery_checkpoint}"
+        )
+        logger.warning("   This means the last epoch did not complete successfully.")
+        return str(recovery_checkpoint)
+
+    logger.info("No checkpoint found, starting fresh.")
+    return None
+
+
 def train_base_models(
     config: Dict,
     model_names: List[str],
@@ -231,24 +308,7 @@ def train_base_models(
         # Determine if we should resume
         resume_path = None
         if resume:
-            # Priority 1: last_checkpoint (end-of-epoch, preferred)
-            last_checkpoint = Path(output_dir) / "last_checkpoint"
-            # Priority 2: recovery_checkpoint (mid-epoch, fallback)
-            recovery_checkpoint = Path(output_dir) / "recovery_checkpoint"
-
-            if last_checkpoint.exists():
-                logger.info(f"✅ Found end-of-epoch checkpoint: {last_checkpoint}")
-                resume_path = str(last_checkpoint)
-            elif recovery_checkpoint.exists():
-                logger.warning(
-                    f"⚠️  Only found mid-epoch recovery checkpoint: {recovery_checkpoint}"
-                )
-                logger.warning(
-                    "   This means the last epoch did not complete successfully."
-                )
-                resume_path = str(recovery_checkpoint)
-            else:
-                logger.info("No checkpoint found, starting fresh.")
+            resume_path = find_latest_checkpoint(Path(output_dir))
 
         # Create model and tokenizer
         model, tokenizer = create_model(model_name, config, pretrained=True)
