@@ -6,6 +6,8 @@ and feature extraction from transformer-based models.
 """
 
 import logging
+import re
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, cast
 
@@ -857,6 +859,35 @@ class EnStackTrainer:
         logger.info("Training completed")
         return history
 
+    def _rotate_checkpoints(self, keep_last_n: int = 1) -> None:
+        """
+        Rotates checkpoints, keeping only the N most recent ones.
+        Target pattern: checkpoint_epoch{E}_step{S}
+        """
+        checkpoints = []
+        pattern = re.compile(r"checkpoint_epoch(\d+)_step(\d+)")
+
+        # Find all matching checkpoints
+        for path in self.output_dir.iterdir():
+            if path.is_dir() and pattern.match(path.name):
+                match = pattern.match(path.name)
+                epoch = int(match.group(1))
+                step = int(match.group(2))
+                checkpoints.append((epoch, step, path))
+
+        # Sort by epoch then step (ascending)
+        checkpoints.sort(key=lambda x: (x[0], x[1]))
+
+        # Identify checkpoints to delete
+        if len(checkpoints) > keep_last_n:
+            to_delete = checkpoints[:-keep_last_n]
+            for _, _, path in to_delete:
+                logger.info(f"🗑️ Deleting old checkpoint: {path.name}")
+                try:
+                    shutil.rmtree(path)
+                except Exception as e:
+                    logger.warning(f"Failed to delete {path.name}: {e}")
+
     def save_checkpoint(
         self, checkpoint_name: str = "checkpoint", epoch: int = 0, step: int = 0
     ) -> None:
@@ -923,6 +954,10 @@ class EnStackTrainer:
             logger.info(
                 f"✅ Checkpoint saved: {checkpoint_name} (epoch={epoch}, step={step})"
             )
+
+            # Cleanup old checkpoints if this was a mid-epoch save
+            if checkpoint_name.startswith("checkpoint_epoch"):
+                self._rotate_checkpoints(keep_last_n=1)
 
         except Exception as e:
             logger.error(f"❌ Failed to save checkpoint {checkpoint_name}: {e}")
