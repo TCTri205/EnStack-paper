@@ -158,3 +158,73 @@ def count_parameters(model: torch.nn.Module) -> int:
         int: Number of trainable parameters.
     """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def quick_verify_checkpoint(checkpoint_path: str) -> bool:
+    """
+    IMPROVEMENT 3: Quick checkpoint verification utility.
+
+    Performs essential checks before attempting to load a checkpoint.
+    This is a lightweight version for integration into training scripts.
+
+    Args:
+        checkpoint_path (str): Path to checkpoint directory.
+
+    Returns:
+        bool: True if checkpoint appears valid, False otherwise.
+
+    Raises:
+        FileNotFoundError: If checkpoint directory or required files are missing.
+        ValueError: If checkpoint files are corrupted.
+    """
+    logger = logging.getLogger("EnStack")
+    checkpoint_dir = Path(checkpoint_path)
+
+    logger.info("🔍 Quick checkpoint verification...")
+
+    # Check 1: Directory exists
+    if not checkpoint_dir.exists():
+        raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
+
+    if not checkpoint_dir.is_dir():
+        raise ValueError(f"Path is not a directory: {checkpoint_dir}")
+
+    # Check 2: Required files exist and are not empty
+    required_files = ["training_state.pth", "config.json"]
+    model_weights = ["model.safetensors", "pytorch_model.bin"]
+
+    for req_file in required_files:
+        file_path = checkpoint_dir / req_file
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"Required file missing: {req_file} in {checkpoint_dir}"
+            )
+        if file_path.stat().st_size == 0:
+            raise ValueError(f"Required file is empty: {req_file}")
+
+    # Check 3: At least one model weight file exists
+    has_weights = False
+    for weight_file in model_weights:
+        weight_path = checkpoint_dir / weight_file
+        if weight_path.exists() and weight_path.stat().st_size > 0:
+            has_weights = True
+            break
+
+    if not has_weights:
+        raise FileNotFoundError(
+            f"No valid model weights found in {checkpoint_dir}. "
+            f"Expected one of: {model_weights}"
+        )
+
+    # Check 4: Try loading training state to verify it's not corrupted
+    try:
+        state = torch.load(checkpoint_dir / "training_state.pth", map_location="cpu")
+        required_keys = ["epoch", "step", "optimizer_state_dict"]
+        missing_keys = [key for key in required_keys if key not in state]
+        if missing_keys:
+            raise ValueError(f"Training state missing required keys: {missing_keys}")
+    except Exception as e:
+        raise ValueError(f"Failed to load training state: {e}")
+
+    logger.info("✅ Checkpoint verification passed")
+    return True

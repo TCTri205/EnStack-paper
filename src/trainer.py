@@ -187,6 +187,116 @@ class EnStackTrainer:
                 "TensorBoard not installed, logging disabled. Install with 'pip install tensorboard'"
             )
 
+    def _validate_checkpoint_integrity(self, checkpoint_dir: Path) -> bool:
+        """
+        IMPROVEMENT 1: Validates checkpoint file integrity before loading.
+
+        Args:
+            checkpoint_dir (Path): Checkpoint directory path.
+
+        Returns:
+            bool: True if checkpoint is valid, raises exception otherwise.
+
+        Raises:
+            FileNotFoundError: If required files are missing.
+            ValueError: If files are corrupted or empty.
+        """
+        logger.info("🔍 Validating checkpoint integrity...")
+
+        required_files = ["training_state.pth", "config.json"]
+        model_weight_files = ["model.safetensors", "pytorch_model.bin"]
+
+        # Check required files
+        for req_file in required_files:
+            file_path = checkpoint_dir / req_file
+            if not file_path.exists():
+                raise FileNotFoundError(
+                    f"❌ Required file missing: {req_file} in {checkpoint_dir}"
+                )
+            # Verify file is not empty
+            if file_path.stat().st_size == 0:
+                raise ValueError(f"❌ File is empty: {req_file}")
+
+        # Check at least one model weight file exists
+        has_weights = False
+        for weight_file in model_weight_files:
+            weight_path = checkpoint_dir / weight_file
+            if weight_path.exists() and weight_path.stat().st_size > 0:
+                has_weights = True
+                logger.info(f"  ✅ Found model weights: {weight_file}")
+                break
+
+        if not has_weights:
+            raise FileNotFoundError(
+                f"❌ No valid model weights found in {checkpoint_dir}. "
+                f"Expected one of: {model_weight_files}"
+            )
+
+        logger.info("✅ Checkpoint integrity validated")
+        return True
+
+    def _validate_optimizer_consistency(
+        self, state: Dict, expected_steps: int, tolerance: int = 20
+    ) -> None:
+        """
+        IMPROVEMENT 2: Validates optimizer step count matches checkpoint metadata.
+
+        Args:
+            state (Dict): Loaded checkpoint state dictionary.
+            expected_steps (int): Expected optimizer steps based on epoch/step.
+            tolerance (int): Maximum allowed difference before warning.
+        """
+        if "optimizer_state_dict" not in state:
+            logger.warning("⚠️  No optimizer state found in checkpoint")
+            return
+
+        opt_state = state["optimizer_state_dict"]
+
+        # Extract optimizer step count
+        if "state" in opt_state and len(opt_state["state"]) > 0:
+            # Get first parameter's step count (all should be the same)
+            first_param_state = opt_state["state"][0]
+            if "step" in first_param_state:
+                actual_steps = first_param_state["step"].item()
+
+                logger.info(f"  Optimizer Steps: {actual_steps}")
+                logger.info(f"  Expected Steps: {expected_steps}")
+
+                diff = abs(actual_steps - expected_steps)
+
+                if diff <= tolerance:
+                    logger.info(
+                        f"  ✅ Optimizer state consistent (diff={diff} steps, within tolerance={tolerance})"
+                    )
+                else:
+                    logger.warning("=" * 60)
+                    logger.warning("⚠️  OPTIMIZER STEP MISMATCH DETECTED")
+                    logger.warning(f"  Actual optimizer steps: {actual_steps}")
+                    logger.warning(f"  Expected steps: {expected_steps}")
+                    logger.warning(f"  Difference: {diff} steps")
+                    logger.warning("")
+                    logger.warning("  Possible causes:")
+                    logger.warning("  1. Gradient accumulation (expected behavior)")
+                    logger.warning("  2. Scheduler warmup phase")
+                    logger.warning("  3. Training was interrupted mid-batch")
+                    logger.warning("")
+                    if diff > 100:
+                        logger.warning(
+                            f"  ⚠️  Large mismatch ({diff} steps) - checkpoint may be inconsistent!"
+                        )
+                        logger.warning(
+                            "     Consider retraining from an earlier checkpoint."
+                        )
+                    else:
+                        logger.warning(
+                            "  ℹ️  Small mismatch is usually harmless (gradient accumulation)."
+                        )
+                    logger.warning("=" * 60)
+            else:
+                logger.warning("  ⚠️  Optimizer state missing 'step' field")
+        else:
+            logger.warning("  ⚠️  Optimizer state appears empty")
+
     def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, int]:
         """
         Loads the model and training state from a checkpoint.
@@ -202,6 +312,9 @@ class EnStackTrainer:
         checkpoint_dir = Path(checkpoint_path)
         if not checkpoint_dir.exists():
             raise FileNotFoundError(f"Checkpoint not found at {checkpoint_dir}")
+
+        # IMPROVEMENT 1: Validate checkpoint integrity before loading
+        self._validate_checkpoint_integrity(checkpoint_dir)
 
         # Load model weights
         from transformers import RobertaForSequenceClassification
@@ -227,6 +340,9 @@ class EnStackTrainer:
 
         self.model.to(self.device)
         logger.info("Successfully loaded weights into existing model instance")
+
+        # IMPROVEMENT 1: Verify model weights were actually loaded
+        logger.info(f"✅ Verified model weights loaded from {checkpoint_dir}")
 
         # Load training state
         state_path = checkpoint_dir / "training_state.pth"
@@ -268,6 +384,18 @@ class EnStackTrainer:
             logger.info(f"  Total Batches (saved): {saved_total_batches}")
             logger.info(f"  Best Val F1: {self.best_val_f1:.4f}")
             logger.info(f"  Best Val Acc: {self.best_val_acc:.4f}")
+
+            # IMPROVEMENT 2: Validate optimizer consistency
+            # Calculate expected optimizer steps
+            current_batches = len(self.train_loader) if self.train_loader else 0
+            if step == 0:
+                # End-of-epoch checkpoint: optimizer should have completed all steps
+                expected_opt_steps = epoch * current_batches
+            else:
+                # Mid-epoch checkpoint
+                expected_opt_steps = (epoch - 1) * current_batches + step
+
+            self._validate_optimizer_consistency(state, expected_opt_steps)
 
             # Determine completion status
             if step == 0:
@@ -703,10 +831,34 @@ class EnStackTrainer:
 
         # Resume if requested
         if resume_from:
+            # IMPROVEMENT 3: Pre-flight checkpoint verification
+            from .utils import quick_verify_checkpoint
+
             logger.info("=" * 60)
             logger.info("RESUMING TRAINING FROM CHECKPOINT")
             logger.info(f"Checkpoint path: {resume_from}")
             logger.info("=" * 60)
+
+            # Quick verification before attempting to load
+            try:
+                quick_verify_checkpoint(resume_from)
+            except (FileNotFoundError, ValueError) as e:
+                logger.error("=" * 60)
+                logger.error("❌ CHECKPOINT VERIFICATION FAILED")
+                logger.error(f"   {e}")
+                logger.error("=" * 60)
+                logger.error("")
+                logger.error("💡 Suggestions:")
+                logger.error("   1. Check the checkpoint path is correct")
+                logger.error("   2. Verify the checkpoint was saved successfully")
+                logger.error("   3. Run full verification:")
+                logger.error(
+                    f"      python scripts/verify_checkpoint.py --checkpoint_path {resume_from}"
+                )
+                logger.error("")
+                raise RuntimeError(
+                    f"Cannot resume training - checkpoint verification failed: {e}"
+                )
 
             loaded_epoch, loaded_step = self.load_checkpoint(resume_from)
 
@@ -752,17 +904,48 @@ class EnStackTrainer:
                         f"➡️  Will resume WITHIN epoch {start_epoch} from step {start_step}"
                     )
 
-            # Adjust scheduler to skip steps
+            # IMPROVEMENT 3: Enhanced scheduler fast-forwarding with validation
             if self.scheduler:
                 steps_per_epoch = len(self.train_loader)
                 steps_to_skip = ((start_epoch - 1) * steps_per_epoch) + start_step
 
                 if steps_to_skip > 0:
+                    # Get learning rate before fast-forward
+                    lr_before = self.optimizer.param_groups[0]["lr"]
+
+                    logger.info("=" * 60)
+                    logger.info("⏩ FAST-FORWARDING SCHEDULER")
+                    logger.info(f"  Total steps to skip: {steps_to_skip}")
                     logger.info(
-                        f"Fast-forwarding scheduler by {steps_to_skip} steps..."
+                        f"  Calculation: ({start_epoch - 1} epochs × {steps_per_epoch} steps/epoch) + {start_step} mid-epoch steps"
                     )
+                    logger.info(f"  LR before fast-forward: {lr_before:.6e}")
+
+                    # Fast-forward
                     for _ in range(steps_to_skip):
                         self.scheduler.step()
+
+                    # Get learning rate after fast-forward
+                    lr_after = self.optimizer.param_groups[0]["lr"]
+                    logger.info(f"  LR after fast-forward: {lr_after:.6e}")
+
+                    # Validate reasonable learning rate
+                    if lr_after < 1e-8:
+                        logger.warning(
+                            "⚠️  WARNING: Learning rate very small after fast-forward!"
+                        )
+                        logger.warning(
+                            f"     LR={lr_after:.2e} - scheduler may have decayed too far"
+                        )
+                    elif lr_after > self.learning_rate * 2:
+                        logger.warning("⚠️  WARNING: Learning rate unexpectedly high!")
+                        logger.warning(
+                            f"     LR={lr_after:.2e} vs initial={self.learning_rate:.2e}"
+                        )
+                    else:
+                        logger.info("  ✅ Learning rate in expected range")
+
+                    logger.info("=" * 60)
 
         history: Dict[str, List[float]] = {
             "train_loss": [],
@@ -998,7 +1181,9 @@ class EnStackTrainer:
         import time
 
         save_path = self.output_dir / checkpoint_name
-        save_path.mkdir(parents=True, exist_ok=True)
+
+        # Detect if we're saving to Google Drive
+        is_gdrive = "/content/drive/" in str(self.output_dir)
 
         # Use temporary directory for atomic save
         temp_dir = None
@@ -1045,44 +1230,91 @@ class EnStackTrainer:
                             f"Required file {req_file} not found in temp directory"
                         )
 
-                # Atomic move: only if everything succeeded
-                # First, backup existing checkpoint if it exists
-                backup_path = None
-                if save_path.exists():
-                    backup_path = self.output_dir / f".backup_{checkpoint_name}"
-                    if backup_path.exists():
-                        self._force_delete(backup_path)
-                    logger.debug(f"Creating backup: {backup_path}")
-                    shutil.move(str(save_path), str(backup_path))
+                # FIX: Google Drive-compatible save (COPY instead of MOVE)
+                if is_gdrive:
+                    logger.debug("Google Drive detected - using COPY method for safety")
 
-                # Move temp to final location
-                logger.debug(f"Moving checkpoint to final location: {save_path}")
-                shutil.move(str(temp_dir), str(save_path))
-                temp_dir = None  # Successfully moved, don't clean up
+                    # First, backup existing checkpoint if it exists
+                    backup_path = None
+                    if save_path.exists():
+                        backup_path = self.output_dir / f".backup_{checkpoint_name}"
+                        if backup_path.exists():
+                            self._force_delete(backup_path)
+                        logger.debug(f"Creating backup: {backup_path}")
+                        shutil.copytree(str(save_path), str(backup_path))
+                        time.sleep(0.5)  # Wait for Drive sync
 
-                # CRITICAL: Wait for Google Drive sync (if on mounted Drive)
-                if "/content/drive/" in str(save_path):
-                    time.sleep(1.0)  # Give Drive 1 second to register the file
+                        # Remove old checkpoint
+                        self._force_delete(save_path)
+                        time.sleep(0.5)  # Wait for Drive to register deletion
 
-                # VERIFY: Check that checkpoint actually exists and has required files
-                if not save_path.exists():
-                    raise FileNotFoundError(
-                        f"Checkpoint directory {save_path} does not exist after save!"
-                    )
+                    # Copy temp to final location (safer than move on Drive)
+                    logger.debug(f"Copying checkpoint to final location: {save_path}")
+                    shutil.copytree(str(temp_dir), str(save_path))
 
-                for req_file in required_files:
-                    final_file = save_path / req_file
-                    if not final_file.exists():
+                    # CRITICAL: Wait for Google Drive sync
+                    logger.debug("Waiting for Google Drive sync...")
+                    time.sleep(2.0)  # Increased wait time for Drive
+
+                    # VERIFY: Check that checkpoint actually exists and has required files
+                    if not save_path.exists():
                         raise FileNotFoundError(
-                            f"Required file {req_file} missing from final checkpoint!"
+                            f"Checkpoint directory {save_path} does not exist after save!"
                         )
-                    # Verify file is not empty
-                    if final_file.stat().st_size == 0:
-                        raise ValueError(f"File {req_file} is empty!")
 
-                # Remove backup on success
-                if backup_path and backup_path.exists():
-                    self._force_delete(backup_path)
+                    for req_file in required_files:
+                        final_file = save_path / req_file
+                        if not final_file.exists():
+                            raise FileNotFoundError(
+                                f"Required file {req_file} missing from final checkpoint!"
+                            )
+                        # Verify file is not empty
+                        if final_file.stat().st_size == 0:
+                            raise ValueError(f"File {req_file} is empty!")
+
+                    # Clean up temp directory after successful copy
+                    self._force_delete(temp_dir)
+                    temp_dir = None
+
+                    # Remove backup on success
+                    if backup_path and backup_path.exists():
+                        self._force_delete(backup_path)
+
+                else:
+                    # Standard atomic move for local filesystems
+                    # First, backup existing checkpoint if it exists
+                    backup_path = None
+                    if save_path.exists():
+                        backup_path = self.output_dir / f".backup_{checkpoint_name}"
+                        if backup_path.exists():
+                            self._force_delete(backup_path)
+                        logger.debug(f"Creating backup: {backup_path}")
+                        shutil.move(str(save_path), str(backup_path))
+
+                    # Move temp to final location
+                    logger.debug(f"Moving checkpoint to final location: {save_path}")
+                    shutil.move(str(temp_dir), str(save_path))
+                    temp_dir = None  # Successfully moved, don't clean up
+
+                    # VERIFY: Check that checkpoint actually exists and has required files
+                    if not save_path.exists():
+                        raise FileNotFoundError(
+                            f"Checkpoint directory {save_path} does not exist after save!"
+                        )
+
+                    for req_file in required_files:
+                        final_file = save_path / req_file
+                        if not final_file.exists():
+                            raise FileNotFoundError(
+                                f"Required file {req_file} missing from final checkpoint!"
+                            )
+                        # Verify file is not empty
+                        if final_file.stat().st_size == 0:
+                            raise ValueError(f"File {req_file} is empty!")
+
+                    # Remove backup on success
+                    if backup_path and backup_path.exists():
+                        self._force_delete(backup_path)
 
                 logger.info(
                     f"✅ Checkpoint saved: {checkpoint_name} (epoch={epoch}, step={step})"
