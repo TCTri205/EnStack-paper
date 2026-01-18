@@ -152,8 +152,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--save-steps",
         type=int,
-        default=500,
-        help="Save checkpoint every X steps (default: 500)",
+        default=None,
+        help="Save checkpoint every X steps (default: uses config or 500)",
     )
 
     parser.add_argument(
@@ -464,6 +464,8 @@ def main():
         config["training"]["batch_size"] = args.batch_size
     if args.output_dir:
         config["training"]["output_dir"] = args.output_dir
+    if args.save_steps is not None:
+        config["training"]["save_steps"] = args.save_steps
 
     # Setup logging
     output_dir = Path(config["training"]["output_dir"])
@@ -502,7 +504,7 @@ def main():
             num_epochs,
             device,
             resume=args.resume,
-            save_steps=args.save_steps,
+            save_steps=config["training"].get("save_steps", 500),
         )
     else:
         logger.info("Skipping base model training (using existing checkpoints)")

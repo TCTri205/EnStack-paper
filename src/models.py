@@ -84,7 +84,23 @@ class EnStackModel(nn.Module):
             logger.info(f"Initialized model from config: {model_name}")
 
         # Store the base model for feature extraction
-        self.base_model = self.model.roberta
+        # FIX: Dynamic detection instead of hard-coded .roberta
+        # Support for different architectures (RoBERTa, BERT, etc.)
+        if hasattr(self.model, "roberta"):
+            self.base_model = self.model.roberta
+        elif hasattr(self.model, "bert"):
+            self.base_model = self.model.bert
+        elif hasattr(self.model, "transformer"):
+            self.base_model = self.model.transformer
+        elif hasattr(self.model, "model"):
+            self.base_model = self.model.model
+        else:
+            # Fallback: try to get base_model attribute or use the model itself
+            self.base_model = getattr(self.model, "base_model", self.model)
+            logger.warning(
+                f"Could not detect base model architecture for {model_name}. "
+                "Using fallback. Feature extraction may not work correctly."
+            )
 
         # Enable gradient checkpointing if requested
         if use_gradient_checkpointing:
@@ -143,27 +159,17 @@ class EnStackModel(nn.Module):
         result = {"logits": logits}
 
         if labels is not None:
-            # Compute loss with label smoothing and class weights
-            if self.label_smoothing > 0 or self.class_weights is not None:
-                loss_fct = nn.CrossEntropyLoss(
-                    weight=(
-                        self.class_weights.to(logits.device)
-                        if self.class_weights is not None
-                        else None
-                    ),
-                    label_smoothing=self.label_smoothing,
-                )
-                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-            else:
-                # Use default model loss
-                outputs_with_loss = self.model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels,
-                    return_dict=True,
-                )
-                loss = outputs_with_loss.loss
-
+            # OPTIMIZATION: Always compute loss manually from logits to avoid double forward pass
+            # This works for all cases (with or without label smoothing/class weights)
+            loss_fct = nn.CrossEntropyLoss(
+                weight=(
+                    self.class_weights.to(logits.device)
+                    if self.class_weights is not None
+                    else None
+                ),
+                label_smoothing=self.label_smoothing,
+            )
+            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
             result["loss"] = loss
 
         return result

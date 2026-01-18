@@ -275,14 +275,15 @@ class EnStackTrainer:
             raise
 
         # Load model weights
-        from transformers import RobertaForSequenceClassification
+        from transformers import AutoModelForSequenceClassification
 
         # FIX: Load weights into the EXISTING model instance to preserve parameter references
         # This prevents the optimizer (initialized in __init__) from becoming detached
         logger.info(f"Loading model weights from {checkpoint_dir}...")
 
-        # Load into a temporary model first to handle safetensors/bin format automatically
-        temp_model = RobertaForSequenceClassification.from_pretrained(
+        # FIX: Use AutoModel instead of hard-coded RobertaForSequenceClassification
+        # This supports any transformer architecture (RoBERTa, BERT, CodeBERT, etc.)
+        temp_model = AutoModelForSequenceClassification.from_pretrained(
             checkpoint_dir, num_labels=self.model.num_labels
         )
 
