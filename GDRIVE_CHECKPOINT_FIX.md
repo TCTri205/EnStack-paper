@@ -26,13 +26,13 @@ Hệ thống lưu checkpoint trên Google Drive gặp lỗi **mất đồng bộ
 **Trên Google Colab**, chạy script sau trong một cell mới:
 
 ```python
-!python cleanup_gdrive_checkpoints.py --dry-run
+!python scripts/cleanup_gdrive_checkpoints.py --dry-run
 ```
 
 Xem danh sách các file sẽ bị xóa. Nếu đồng ý, chạy lại không có `--dry-run`:
 
 ```python
-!python cleanup_gdrive_checkpoints.py
+!python scripts/cleanup_gdrive_checkpoints.py
 ```
 
 **Hoặc xóa thủ công** (nếu script gặp lỗi):
@@ -83,7 +83,7 @@ Chạy script training **từ đầu** (hoặc resume từ `best_model`):
 
 ```python
 # Trong Google Colab
-!python scripts/train_base_models.py --resume_from /content/drive/MyDrive/EnStack_Data/checkpoints/codebert/best_model
+!python scripts/train.py --resume_from /content/drive/MyDrive/EnStack_Data/checkpoints/codebert/best_model
 ```
 
 ### Bước 5: Theo dõi và Xác minh
@@ -123,7 +123,7 @@ Google Drive sync có thể mất thời gian. Nếu bạn ngắt kết nối Co
 Trước khi chạy training đầy đủ, bạn có thể test cơ chế lưu checkpoint:
 
 ```python
-!python test_checkpoint_save.py
+!python scripts/test_checkpoint_save.py
 ```
 
 Nếu thấy `✅ ALL TESTS PASSED`, nghĩa là cơ chế lưu đã hoạt động đúng.
@@ -154,7 +154,7 @@ Nếu thấy `✅ ALL TESTS PASSED`, nghĩa là cơ chế lưu đã hoạt độ
 ## Tóm tắt
 
 ✅ **Code đã được sửa** - Cơ chế lưu đã tương thích với Google Drive  
-✅ **Script dọn dẹp** - `cleanup_gdrive_checkpoints.py`  
+✅ **Script dọn dẹp** - `scripts/cleanup_gdrive_checkpoints.py`  
 ✅ **Checkpoint an toàn** - Resume từ `best_model` (Epoch 2)  
 ✅ **Hướng dẫn đầy đủ** - Tài liệu này
 

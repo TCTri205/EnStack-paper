@@ -1,37 +1,95 @@
-# Data
+# ==========================================
+# Data & Artifacts (Ignore large files)
+# ==========================================
 data/
+# Trừ trường hợp bạn muốn giữ lại file .gitkeep hoặc dữ liệu mẫu rất nhỏ
+# !data/sample_*.csv
 *.pkl
 *.h5
 *.npy
 *.csv
+*.parquet
+*.jsonl
 
-# Models
+# ==========================================
+# Models & Checkpoints
+# ==========================================
 *.bin
 *.pth
+*.pt
+*.safetensors
+*.ckpt
+outputs/
 checkpoints/
 models/
+# Artifacts từ training (tensorboard, v.v.)
+runs/
+mlruns/
+wandb/
 
-# Python
+# ==========================================
+# Python & Environment
+# ==========================================
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .venv/
 venv/
+ENV/
+env/
 .env
+.PYTHON_HISTORY
 
-# IDE
+# ==========================================
+# Configurations (Local-only)
+# ==========================================
+configs/config_local.yaml
+.opencode/
+
+# ==========================================
+# IDEs & Editors
+# ==========================================
 .vscode/
 .idea/
+*.swp
+*.swo
+.history/
 
-# Jupyter
+# ==========================================
+# Jupyter Notebooks
+# ==========================================
 .ipynb_checkpoints/
+*/.ipynb_checkpoints/*
 
-# Testing
+# ==========================================
+# Testing & Coverage
+# ==========================================
 .pytest_cache/
+.tox/
+.nox/
 .coverage
-htmlcov/
+.cache
+nosetests.xml
+coverage.xml
 *.cover
+htmlcov/
 
-# Logs
-logs/
-*.log
-outputs/
+# ==========================================
+# Tree-sitter & Build
+# ==========================================
+build/
+dist/
+*.egg-info/
+*.so
+*.dll
+*.dylib
+
+# ==========================================
+# OS Specific
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini

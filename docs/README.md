@@ -64,6 +64,8 @@ một hệ thống phát hiện mạnh mẽ hơn.
 - **[Giải quyết sự cố (Troubleshooting)](TROUBLESHOOTING.md)** - Hướng dẫn khắc phục 
   các lỗi thường gặp
 - **[Câu hỏi thường gặp (FAQ)](FAQ.md)** - Giải đáp các thắc mắc chung về dự án
+- **[Cải tiến Checkpoint (Checkpoint Improvements)](checkpoint_improvements.md)** - Chi tiết về các cải tiến hệ thống lưu và xác minh checkpoint
+- **[Hướng dẫn Xác minh Checkpoint (Checkpoint Verification Guide)](checkpoint_verification_guide.md)** - Hướng dẫn sử dụng các công cụ xác minh checkpoint
 
 ## 📊 Tóm tắt Kết quả (Results Summary)
 

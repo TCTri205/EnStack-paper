@@ -75,7 +75,7 @@ This project includes a specialized **"Local-First"** checkpoint saving strategy
 - **Fast Saving**: Models are first saved to the local VM SSD (`/content/temp_checkpoints`), making the process 5-10x faster.
 - **Safe I/O**: Checkpoints are copied to Drive in a single operation with `os.sync()` to ensure data integrity.
 - **Resilience**: Automatic retry mechanism and validation checks to prevent corrupted checkpoints.
-- **Cleanup Utility**: Use `python cleanup_gdrive_checkpoints.py` to remove any orphaned temporary folders from your Drive.
+- **Cleanup Utility**: Use `python scripts/cleanup_gdrive_checkpoints.py` to remove any orphaned temporary folders from your Drive.
 
 For more details, see [GDRIVE_CHECKPOINT_FIX.md](GDRIVE_CHECKPOINT_FIX.md).
 

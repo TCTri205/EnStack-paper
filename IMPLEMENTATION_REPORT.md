@@ -13,8 +13,8 @@ Dự án EnStack đã được triển khai đầy đủ theo kế hoạch trong
 - **Tổng số file Markdown**: 15 files  
 - **Tổng số dòng code Python**: 2,196 dòng
 - **Số module chính**: 5 modules (utils, dataset, models, trainer, stacking)
-- **Số test files**: 3 files
-- **Số scripts hỗ trợ**: 3 scripts
+- **Số test files**: 4 files
+- **Số scripts hỗ trợ**: 10+ scripts (train, prepare_data, checkpoint utilities, v.v.)
 
 ## Chi Tiết Các Giai Đoạn Đã Hoàn Thành
 
