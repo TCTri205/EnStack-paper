@@ -818,7 +818,7 @@ class EnStackTrainer:
                 logger.error("")
                 raise RuntimeError(
                     f"Cannot resume training - checkpoint verification failed: {e}"
-                )
+                ) from e
 
             loaded_epoch, loaded_step = self.load_checkpoint(resume_from)
 
@@ -845,9 +845,9 @@ class EnStackTrainer:
                 logger.warning(
                     f"⚠️  Checkpoint indicates training finished (Epoch {start_epoch - 1} >= {num_epochs})"
                 )
-                logger.warning(f"   Current logic would SKIP training.")
+                logger.warning("   Current logic would SKIP training.")
                 logger.warning(
-                    f"   ACTION: Forcing restart from Epoch 1 to ensure training occurs."
+                    "   ACTION: Forcing restart from Epoch 1 to ensure training occurs."
                 )
                 logger.warning("!" * 60 + "\n")
                 start_epoch = 1
@@ -1189,7 +1189,7 @@ class EnStackTrainer:
                     logger.debug(f"Created standard temp dir: {temp_dir}")
 
                 # Save model to temp directory first
-                logger.debug(f"Saving model to temporary location...")
+                logger.debug("Saving model to temporary location...")
                 self.model.save_pretrained(str(temp_dir))
 
                 # Save optimizer and training state
@@ -1348,7 +1348,7 @@ class EnStackTrainer:
                         )
                         raise RuntimeError(
                             f"Failed to save critical checkpoint {checkpoint_name} after {max_retries} attempts: {e}"
-                        )
+                        ) from e
                     else:
                         # Mid-epoch checkpoints: log warning but continue
                         logger.warning(
@@ -1475,13 +1475,6 @@ class EnStackTrainer:
 
         # Final cleanup
         torch.cuda.empty_cache()
-                        new_array = np.zeros((end_idx, feature_dim), dtype=np.float32)
-                        new_array[:start_idx] = features_array[:start_idx]
-                        features_array = new_array
-                        num_samples = end_idx
-
-                    features_array[start_idx:end_idx] = batch_features_np
-                    start_idx = end_idx
 
         # Trim if dataset length was overestimated (e.g. distributed sampling)
         if start_idx < num_samples and features_array is not None:

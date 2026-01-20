@@ -7,7 +7,6 @@ including base models and meta-classifier.
 
 import argparse
 import logging
-import re
 import sys
 from pathlib import Path
 
@@ -526,9 +525,13 @@ def main():
         # This is CRITICAL to ensure features align with labels (which are loaded sequentially)
         # Also disable smart_batching to preserve original file order
         logger.info(
-            "Creating deterministic train loader (shuffle=False, smart_batching=False)..."
+            "Creating deterministic loaders (shuffle=False, smart_batching=False)..."
         )
-        train_loader_deterministic, _, _ = create_dataloaders(
+        (
+            train_loader_deterministic,
+            val_loader_deterministic,
+            test_loader_deterministic,
+        ) = create_dataloaders(
             config,
             tokenizer=trainers[
                 model_names[0]
@@ -540,10 +543,15 @@ def main():
             smart_batching=False,  # CRITICAL: No sorting to match labels
         )
 
-        # Update dataloaders dictionary with the non-shuffled loader
+        # Update dataloaders dictionary with the non-shuffled loaders
         for model_name in model_names:
-            if model_name in dataloaders and "train" in dataloaders[model_name]:
-                dataloaders[model_name]["train"] = train_loader_deterministic
+            if model_name in dataloaders:
+                if "train" in dataloaders[model_name]:
+                    dataloaders[model_name]["train"] = train_loader_deterministic
+                if "val" in dataloaders[model_name]:
+                    dataloaders[model_name]["val"] = val_loader_deterministic
+                if "test" in dataloaders[model_name]:
+                    dataloaders[model_name]["test"] = test_loader_deterministic
 
         # Use cached features if available
         features_dict = extract_all_features(
@@ -662,7 +670,6 @@ def main():
             )
             try:
                 # Train temp XGBoost
-                from src.stacking import train_meta_classifier
 
                 # We need to re-import or use the xgboost string directly
                 viz_classifier = train_meta_classifier(

@@ -573,6 +573,7 @@ def create_dataloaders(
             max_length=max_length,
             lazy_loading=lazy_loading,
             cache_tokenization=cache_tokenization,
+            smart_batching=smart_batching,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -596,6 +597,7 @@ def create_dataloaders(
             max_length=max_length,
             lazy_loading=lazy_loading,
             cache_tokenization=cache_tokenization,
+            smart_batching=smart_batching,
         )
         test_loader = DataLoader(
             test_dataset,
