@@ -160,12 +160,13 @@ class EnStackTrainer:
         self.optimizer = AdamW(self.model.parameters(), lr=learning_rate)
 
         # Initialize AMP GradScaler if using mixed precision
-        self.scaler = (
-            torch.cuda.amp.GradScaler()
-            if use_amp and self.device.type == "cuda"
-            else None
-        )
-        if self.scaler:
+        # FIX: Update for PyTorch 2.x compatibility
+        self.scaler = None
+        if use_amp and self.device.type == "cuda":
+            if hasattr(torch.amp, "GradScaler"):
+                self.scaler = torch.amp.GradScaler(device="cuda")
+            else:
+                self.scaler = torch.cuda.amp.GradScaler()
             logger.info("Automatic Mixed Precision (AMP) enabled")
 
         # Scheduler will be set during training
@@ -1459,6 +1460,21 @@ class EnStackTrainer:
                         logger.warning(
                             f"Dataset length mismatch! Resizing buffer from {num_samples} to {end_idx}"
                         )
+                        new_array = np.zeros((end_idx, feature_dim), dtype=np.float32)
+                        new_array[:num_samples] = features_array
+                        features_array = new_array
+                        num_samples = end_idx
+
+                    features_array[start_idx:end_idx] = batch_features_np
+                    start_idx = end_idx
+
+                    # OPTIMIZATION: Clear cache aggressively during feature extraction
+                    # to prevent OOM on large datasets
+                    del input_ids, attention_mask, batch_features, batch_features_np
+                    self.memory_manager.check_and_clear(force=False)
+
+        # Final cleanup
+        torch.cuda.empty_cache()
                         new_array = np.zeros((end_idx, feature_dim), dtype=np.float32)
                         new_array[:start_idx] = features_array[:start_idx]
                         features_array = new_array

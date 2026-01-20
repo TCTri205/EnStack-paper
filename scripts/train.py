@@ -519,6 +519,26 @@ def main():
         mode = config["training"].get("stacking_mode", "logits")
         pooling = config["training"].get("pooling_mode", "mean")
 
+        # FIX: Re-create train_loader with shuffle=False for deterministic feature extraction
+        # This is CRITICAL to ensure features align with labels (which are loaded sequentially)
+        logger.info(
+            "Re-creating training loader with shuffle=False for feature extraction..."
+        )
+        train_loader_noshuffle, _, _ = create_dataloaders(
+            config,
+            tokenizer=trainers[
+                model_names[0]
+            ].model.tokenizer,  # Use tokenizer from first model
+            use_dynamic_padding=config["training"].get("use_dynamic_padding", True),
+            lazy_loading=config["training"].get("lazy_loading", False),
+            cache_tokenization=config["training"].get("cache_tokenization", True),
+        )
+
+        # Update dataloaders dictionary with the non-shuffled loader
+        for model_name in model_names:
+            if model_name in dataloaders and "train" in dataloaders[model_name]:
+                dataloaders[model_name]["train"] = train_loader_noshuffle
+
         # Use cached features if available
         features_dict = extract_all_features(
             config, trainers, dataloaders, mode=mode, pooling=pooling, use_cache=True
@@ -621,11 +641,39 @@ def main():
             for c in range(num_classes):
                 feature_names.append(f"{model_name}_prob_{c}")
 
-        plot_meta_feature_importance(
-            meta_classifier,
-            feature_names,
-            save_path=f"{config['training']['output_dir']}/feature_importance.png",
-        )
+        # FIX: If meta-classifier (like SVM) doesn't support feature importance,
+        # train a temporary XGBoost model just for visualization
+        try:
+            plot_meta_feature_importance(
+                meta_classifier,
+                feature_names,
+                save_path=f"{config['training']['output_dir']}/feature_importance.png",
+            )
+        except Exception:
+            logger.warning(
+                "Primary meta-classifier does not support feature importance. "
+                "Training temporary XGBoost model for visualization..."
+            )
+            try:
+                # Train temp XGBoost
+                from src.stacking import train_meta_classifier
+
+                # We need to re-import or use the xgboost string directly
+                viz_classifier = train_meta_classifier(
+                    train_meta_features,
+                    train_labels,
+                    classifier_type="xgboost",
+                    n_estimators=100,
+                    max_depth=6,
+                )
+                plot_meta_feature_importance(
+                    viz_classifier,
+                    feature_names,
+                    save_path=f"{config['training']['output_dir']}/feature_importance.png",
+                )
+                logger.info("✅ Feature importance plot generated using proxy model")
+            except Exception as e:
+                logger.error(f"❌ Failed to generate feature importance plot: {e}")
 
         # Log results to CSV
         log_experiment_results(config, test_metrics, config["training"]["output_dir"])
