@@ -337,6 +337,7 @@ def train_base_models(
             early_stopping_metric=config["training"].get("early_stopping_metric", "f1"),
             logging_steps=config["training"].get("logging_steps", 50),
         )
+        trainer.tokenizer = tokenizer  # type: ignore[attr-defined]
 
         # Train
         if num_epochs > 0:
@@ -369,6 +370,107 @@ def train_base_models(
         logger.info(f"{model_name} training completed\n")
 
     return trainers, dataloaders
+
+
+def extract_all_features_sequential(
+    config: Dict,
+    trainers: Dict,
+    model_names: List[str],
+    mode: str = "logits",
+    pooling: str = "mean",
+    use_cache: bool = True,
+) -> Dict:
+    """
+    Extracts features sequentially per model with deterministic loaders.
+
+    Args:
+        config (Dict): Configuration dictionary.
+        trainers (Dict): Dictionary of trained trainers.
+        model_names (List[str]): List of base model names.
+        mode (str): Type of features to extract ('logits' or 'embedding').
+        pooling (str): Pooling strategy for embeddings.
+        use_cache (bool): Whether to use feature caching and tokenization cache.
+
+    Returns:
+        Dict: Dictionary containing feature arrays for each split.
+    """
+    logger = logging.getLogger("EnStack")
+    logger.info("=" * 60)
+    logger.info(f"EXTRACTING {mode.upper()} FOR STACKING (SEQUENTIAL)")
+    logger.info("=" * 60)
+
+    train_features_list = []
+    val_features_list = []
+    test_features_list = []
+
+    cache_dir = (
+        Path(config["training"]["output_dir"]) / "feature_cache" if use_cache else None
+    )
+
+    for model_name in model_names:
+        trainer = trainers[model_name]
+        tokenizer = getattr(trainer, "tokenizer", None)
+        if tokenizer is None:
+            raise ValueError(
+                f"Tokenizer not found for model '{model_name}'. "
+                "Ensure trainer.tokenizer is set during training."
+            )
+
+        logger.info(
+            f"Creating deterministic loaders for {model_name} "
+            "(shuffle=False, smart_batching=False)..."
+        )
+        train_loader, val_loader, test_loader = create_dataloaders(
+            config,
+            tokenizer=tokenizer,
+            use_dynamic_padding=config["training"].get("use_dynamic_padding", True),
+            lazy_loading=config["training"].get("lazy_loading", False),
+            cache_tokenization=use_cache,
+            train_shuffle=False,
+            smart_batching=False,
+        )
+
+        logger.info(f"Extracting {mode} from {model_name}...")
+
+        if train_loader:
+            cache_path = (
+                str(cache_dir / f"{model_name}_train_{mode}.npy") if cache_dir else None
+            )
+            train_features = trainer.extract_features(
+                train_loader, mode=mode, pooling=pooling, cache_path=cache_path
+            )
+            train_features_list.append(train_features)
+
+        if val_loader:
+            cache_path = (
+                str(cache_dir / f"{model_name}_val_{mode}.npy") if cache_dir else None
+            )
+            val_features = trainer.extract_features(
+                val_loader, mode=mode, pooling=pooling, cache_path=cache_path
+            )
+            val_features_list.append(val_features)
+
+        if test_loader:
+            cache_path = (
+                str(cache_dir / f"{model_name}_test_{mode}.npy") if cache_dir else None
+            )
+            test_features = trainer.extract_features(
+                test_loader, mode=mode, pooling=pooling, cache_path=cache_path
+            )
+            test_features_list.append(test_features)
+
+        del train_loader, val_loader, test_loader
+        import gc
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return {
+        "train": train_features_list,
+        "val": val_features_list,
+        "test": test_features_list,
+    }
 
 
 def extract_all_features(
@@ -521,41 +623,9 @@ def main():
         mode = config["training"].get("stacking_mode", "logits")
         pooling = config["training"].get("pooling_mode", "mean")
 
-        # FIX: Re-create train_loader with shuffle=False for deterministic feature extraction
-        # This is CRITICAL to ensure features align with labels (which are loaded sequentially)
-        # Also disable smart_batching to preserve original file order
-        logger.info(
-            "Creating deterministic loaders (shuffle=False, smart_batching=False)..."
-        )
-        (
-            train_loader_deterministic,
-            val_loader_deterministic,
-            test_loader_deterministic,
-        ) = create_dataloaders(
-            config,
-            tokenizer=trainers[
-                model_names[0]
-            ].model.tokenizer,  # Use tokenizer from first model
-            use_dynamic_padding=config["training"].get("use_dynamic_padding", True),
-            lazy_loading=config["training"].get("lazy_loading", False),
-            cache_tokenization=config["training"].get("cache_tokenization", True),
-            train_shuffle=False,  # CRITICAL: No shuffle to match labels
-            smart_batching=False,  # CRITICAL: No sorting to match labels
-        )
-
-        # Update dataloaders dictionary with the non-shuffled loaders
-        for model_name in model_names:
-            if model_name in dataloaders:
-                if "train" in dataloaders[model_name]:
-                    dataloaders[model_name]["train"] = train_loader_deterministic
-                if "val" in dataloaders[model_name]:
-                    dataloaders[model_name]["val"] = val_loader_deterministic
-                if "test" in dataloaders[model_name]:
-                    dataloaders[model_name]["test"] = test_loader_deterministic
-
-        # Use cached features if available
-        features_dict = extract_all_features(
-            config, trainers, dataloaders, mode=mode, pooling=pooling, use_cache=True
+        # Use cached features if available (sequential per model, per-tokenizer)
+        features_dict = extract_all_features_sequential(
+            config, trainers, model_names, mode=mode, pooling=pooling, use_cache=True
         )
 
         # Load labels
