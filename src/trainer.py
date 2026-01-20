@@ -837,6 +837,20 @@ class EnStackTrainer:
                         f"\n✅ Epoch {loaded_epoch} was COMPLETED\n"
                         f"➡️  Will resume from START of epoch {start_epoch}"
                     )
+
+            # AUTO-FIX: If checkpoint is fully trained, restart from Epoch 1
+            if start_epoch > num_epochs:
+                logger.warning("\n" + "!" * 60)
+                logger.warning(
+                    f"⚠️  Checkpoint indicates training finished (Epoch {start_epoch - 1} >= {num_epochs})"
+                )
+                logger.warning(f"   Current logic would SKIP training.")
+                logger.warning(
+                    f"   ACTION: Forcing restart from Epoch 1 to ensure training occurs."
+                )
+                logger.warning("!" * 60 + "\n")
+                start_epoch = 1
+                start_step = 0
             else:
                 # Checkpoint saved mid-epoch
                 # Check if we actually completed the epoch by comparing with current dataset size
