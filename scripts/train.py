@@ -647,7 +647,7 @@ def main():
             save_path=f"{config['training']['output_dir']}/confusion_matrix.png",
         )
 
-        # Plot feature importance
+        # Plot feature importance (supported only when classifier exposes importances or coefficients)
         feature_names = []
         for model_name in model_names:
             # Add features for each class if it's probability mode
@@ -655,38 +655,18 @@ def main():
             for c in range(num_classes):
                 feature_names.append(f"{model_name}_prob_{c}")
 
-        # FIX: If meta-classifier (like SVM) doesn't support feature importance,
-        # train a temporary XGBoost model just for visualization
         try:
             plot_meta_feature_importance(
                 meta_classifier,
                 feature_names,
                 save_path=f"{config['training']['output_dir']}/feature_importance.png",
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Primary meta-classifier does not support feature importance. "
-                "Training temporary XGBoost model for visualization..."
+                "Feature importance plot skipped (SVM with RBF kernel). "
+                "No proxy model is trained to stay consistent with the paper."
             )
-            try:
-                # Train temp XGBoost
-
-                # We need to re-import or use the xgboost string directly
-                viz_classifier = train_meta_classifier(
-                    train_meta_features,
-                    train_labels,
-                    classifier_type="xgboost",
-                    n_estimators=100,
-                    max_depth=6,
-                )
-                plot_meta_feature_importance(
-                    viz_classifier,
-                    feature_names,
-                    save_path=f"{config['training']['output_dir']}/feature_importance.png",
-                )
-                logger.info("✅ Feature importance plot generated using proxy model")
-            except Exception as e:
-                logger.error(f"❌ Failed to generate feature importance plot: {e}")
+            logger.debug("Feature importance plot error: %s", exc)
 
         # Log results to CSV
         log_experiment_results(config, test_metrics, config["training"]["output_dir"])
