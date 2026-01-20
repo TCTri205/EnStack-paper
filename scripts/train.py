@@ -301,12 +301,15 @@ def train_base_models(
         model, tokenizer = create_model(model_name, config, pretrained=True)
 
         # Create dataloaders (ONLY ONCE per model)
+        # CRITICAL: Use train_shuffle=True and smart_batching=True for training optimization
         train_loader, val_loader, test_loader = create_dataloaders(
             config,
             tokenizer,
             use_dynamic_padding=config["training"].get("use_dynamic_padding", True),
             lazy_loading=config["training"].get("lazy_loading", False),
             cache_tokenization=config["training"].get("cache_tokenization", True),
+            train_shuffle=True,  # Explicitly shuffle for training
+            smart_batching=True,  # Enable smart batching for speed
         )
 
         # Store dataloaders for later use
@@ -521,10 +524,11 @@ def main():
 
         # FIX: Re-create train_loader with shuffle=False for deterministic feature extraction
         # This is CRITICAL to ensure features align with labels (which are loaded sequentially)
+        # Also disable smart_batching to preserve original file order
         logger.info(
-            "Re-creating training loader with shuffle=False for feature extraction..."
+            "Creating deterministic train loader (shuffle=False, smart_batching=False)..."
         )
-        train_loader_noshuffle, _, _ = create_dataloaders(
+        train_loader_deterministic, _, _ = create_dataloaders(
             config,
             tokenizer=trainers[
                 model_names[0]
@@ -532,12 +536,14 @@ def main():
             use_dynamic_padding=config["training"].get("use_dynamic_padding", True),
             lazy_loading=config["training"].get("lazy_loading", False),
             cache_tokenization=config["training"].get("cache_tokenization", True),
+            train_shuffle=False,  # CRITICAL: No shuffle to match labels
+            smart_batching=False,  # CRITICAL: No sorting to match labels
         )
 
         # Update dataloaders dictionary with the non-shuffled loader
         for model_name in model_names:
             if model_name in dataloaders and "train" in dataloaders[model_name]:
-                dataloaders[model_name]["train"] = train_loader_noshuffle
+                dataloaders[model_name]["train"] = train_loader_deterministic
 
         # Use cached features if available
         features_dict = extract_all_features(

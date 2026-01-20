@@ -481,6 +481,8 @@ def create_dataloaders(
     use_dynamic_padding: bool = True,
     lazy_loading: bool = False,
     cache_tokenization: bool = False,
+    train_shuffle: bool = True,
+    smart_batching: bool = True,
 ) -> Tuple[Optional[DataLoader], Optional[DataLoader], Optional[DataLoader]]:
     """
     Creates DataLoader instances for training, validation, and testing.
@@ -494,6 +496,8 @@ def create_dataloaders(
         use_dynamic_padding (bool): Whether to use dynamic padding.
         lazy_loading (bool): Whether to use lazy loading.
         cache_tokenization (bool): Whether to cache tokenized inputs.
+        train_shuffle (bool): Whether to shuffle training data (default: True).
+        smart_batching (bool): Whether to sort by sequence length (default: True).
 
     Returns:
         Tuple[Optional[DataLoader], Optional[DataLoader], Optional[DataLoader]]:
@@ -543,11 +547,12 @@ def create_dataloaders(
             max_length=max_length,
             lazy_loading=lazy_loading,
             cache_tokenization=cache_tokenization,
+            smart_batching=smart_batching,
         )
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=train_shuffle,
             num_workers=num_workers,
             collate_fn=collate_fn,
             pin_memory=pin_memory,
@@ -556,7 +561,9 @@ def create_dataloaders(
         )
         logger.info(
             f"Created train DataLoader with {len(train_dataset)} samples "
-            f"(dynamic_padding={use_dynamic_padding}, lazy_loading={lazy_loading}, cache={cache_tokenization})"
+            f"(shuffle={train_shuffle}, dynamic_padding={use_dynamic_padding}, "
+            f"lazy_loading={lazy_loading}, cache={cache_tokenization}, "
+            f"smart_batching={smart_batching})"
         )
 
     if val_path and Path(val_path).exists():
